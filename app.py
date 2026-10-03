@@ -56,7 +56,7 @@ with st.sidebar:
         ]
     )
     
-    if search_category == "✏️️ 自由キーワード指定":
+    if search_category == "✏️ 自由キーワード指定":
         user_keyword = st.text_input("検索キーワードを入力", value="航空 事故")
         query_text = user_keyword
     else:
@@ -128,7 +128,7 @@ def generate_ai_report(client, title, content):
 【ニュースタイトル】
 {title}
 
-【ニュース本文・概要】
+【ニュース概要・本文】
 {content}
 
 【出力フォーマット】
@@ -155,16 +155,24 @@ def generate_ai_report(client, title, content):
             )
             return response.text
         except APIError as e:
+            err_msg = str(e)
+            
+            # 1日の上限数（Daily Quota）に達した場合はリトライせず分かりやすく通知
+            if e.code == 429 and ("retry in" in err_msg or "h" in err_msg):
+                return "🚨 **1日あたりのGemini API無料利用上限に達しました。**\nサイドバーで【別のGemini APIキー】を入力するか、数時間後に再度お試しください。"
+            
+            # 1分あたりの連打制限(429)の場合は30秒待機して自動再試行
             if e.code == 429 and attempt < 2:
                 time.sleep(30)
                 continue
+            # ★サーバー混雑(503)の場合は10秒待機して自動再試行
             elif e.code == 503 and attempt < 2:
-                time.sleep(5)
+                time.sleep(10)
                 continue
             return f"⚠️ **APIエラーが発生しました (Code: {e.code}):** {e.message}"
         except Exception as e:
             if attempt < 2:
-                time.sleep(5)
+                time.sleep(10)
                 continue
             return f"⚠️ **予期せぬエラーが発生しました:** {str(e)}"
 
