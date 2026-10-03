@@ -10,114 +10,121 @@ import urllib.parse
 # 1. ページ初期設定 & 画面タイトル
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="マルチニュースAIアナライザー (Gemini版)",
+    page_title="航空業界AIニュースアナライザー",
     page_icon="✈️",
     layout="wide"
 )
 
-st.title("✈️ 航空業界・マルチニュース AI要約・記事生成ツール")
-st.caption("様々なニュースサイトやキーワード検索から最新情報を自動取得し、Google Gemini APIが業界向け要約レポートを作成します。")
+st.title("✈️ 航空業界 AIニュースアナライザー & レポート生成")
+st.caption("Web上からワイドに最新の航空ニュースを取得し、Gemini APIが自動要約・業界分析・簡易記事を作成します。")
 
 # ---------------------------------------------------------
-# 2. サイドバー（APIキー設定 & 情報源選択）
+# 2. サイドバー（設定 & 検索条件）
 # ---------------------------------------------------------
 with st.sidebar:
     st.header("⚙️ 設定")
     
-    # Gemini APIキーの入力（Secrets設定があれば自動取得）
+    # Gemini APIキーの入力（Secrets自動取得対応）
     api_key_input = st.text_input(
         "Gemini API Key",
         type="password",
         value=st.secrets.get("GEMINI_API_KEY", ""),
-        help="Google AI Studio (https://aistudio.google.com/) で取得したAPIキーを入力してください。"
+        help="Google AI Studio (https://aistudio.google.com/) の無料キーを入力してください。"
     )
     
     st.divider()
+    st.subheader("🔍 ニュース検索設定")
     
-    # モード選択: キーワード検索 or プリセットサイト
-    fetch_mode = st.radio(
-        "取得モードを選択",
-        ["🔍 キーワード自由検索 (Google News)", "🌐 専門サイト一覧から選択"]
+    # 検索テーマ（キーワード）の選択・入力
+    search_category = st.selectbox(
+        "プリセット検索カテゴリ",
+        [
+            "航空業界全般（JAL / ANA / LCC / 航空路線）",
+            "エアライン経営・国際線・燃油サーチャージ",
+            "新型旅客機・ボーイング・エアバス（機材・製造）",
+            "空港・グランドハンドリング・管制・運航整備",
+            "✏️ 自由キーワード指定"
+        ]
     )
     
-    rss_url = ""
-    
-    if fetch_mode == "🔍 キーワード自由検索 (Google News)":
-        search_keyword = st.text_input("検索キーワード", value="航空")
-        encoded_keyword = urllib.parse.quote(search_keyword)
-        # Google News RSS (キーワード検索URL)
-        rss_url = f"https://news.google.com/rss/search?q={encoded_keyword}&hl=ja&gl=JP&ceid=JP:ja"
-        st.info(f"💡 WEB全体のメディアから「{search_keyword}」に関する最新記事を収集します。")
-        
+    if search_category == "✏️ 自由キーワード指定":
+        user_keyword = st.text_input("検索キーワードを入力", value="航空 路線")
+        query_text = user_keyword
     else:
-        # プリセットサイト一覧
-        site_options = {
-            "TRAICY (航空・旅行全般)": "https://www.traicy.com/feed",
-            "乗りものニュース (交通・航空)": "https://trafficnews.jp/feed",
-            "Aviation Wire (国内航空)": "https://www.aviationwire.jp/feed",
-            "FlightGlobal (英語・海外航空)": "https://www.flightglobal.com/category/air-transport/",
-            "Google News (航空業界全般)": "https://news.google.com/rss/search?q=%E8%88%AA%E7%A9%BA&hl=ja&gl=JP&ceid=JP:ja"
+        category_map = {
+            "航空業界全般（JAL / ANA / LCC / 航空路線）": "航空 JAL ANA LCC 路線",
+            "エアライン経営・国際線・燃油サーチャージ": "航空 燃油サーチャージ 国際線 運賃",
+            "新型旅客機・ボーイング・エアバス（機材・製造）": "ボーイング エアバス 旅客機 航空機",
+            "空港・グランドハンドリング・管制・運航整備": "空港 管制 整備 グランドハンドリング 航空"
         }
-        selected_site = st.selectbox("情報源サイトを選択", list(site_options.keys()))
-        rss_url = site_options[selected_site]
+        query_text = category_map[search_category]
     
-    st.divider()
-    max_articles = st.slider("取得件数", min_value=1, max_value=5, value=3)
+    max_articles = st.slider("取得・要約件数", min_value=1, max_value=5, value=3)
 
 # ---------------------------------------------------------
-# 3. 便利関数の定義
+# 3. ニュース検索 ＆ AI処理関数
 # ---------------------------------------------------------
-def fetch_rss_news(url, max_items=3):
-    """RSSフィード/Google Newsから最新ニュースを取得する（User-Agentヘッダー付き）"""
+def search_web_news(query, max_items=3):
+    """Google News RSS連携を利用してWeb全体から信頼性の高い最新航空ニュースを収集"""
+    encoded_query = urllib.parse.quote(query)
+    # 日本国内の主要ニュースソースから最新ニュースを取得
+    rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ja&gl=JP&ceid=JP:ja"
+    
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(rss_url, headers=headers, timeout=10)
         feed = feedparser.parse(response.content)
     except Exception:
-        feed = feedparser.parse(url)
+        feed = feedparser.parse(rss_url)
 
     articles = []
     for entry in feed.entries[:max_items]:
-        # 本文または概要の取得とHTMLタグ除去
         summary_raw = entry.get("summary", entry.get("description", ""))
         clean_summary = BeautifulSoup(summary_raw, "html.parser").get_text()
         
-        # 本文が極端に短い場合の補填処理
-        if len(clean_summary.strip()) < 10:
-            clean_summary = entry.title
+        # 概要文が短い場合はタイトルで補填
+        if len(clean_summary.strip()) < 15:
+            clean_summary = f"タイトル: {entry.title}"
             
         articles.append({
             "title": entry.title,
             "link": entry.link,
-            "published": entry.get("published", entry.get("updated", "日時不明")),
+            "published": entry.get("published", entry.get("updated", "最新")),
             "summary": clean_summary
         })
     return articles
 
 def generate_ai_report(client, title, content):
-    """Gemini API（gemini-3.8-flash）を使ってニュースのAI要約・分析記事を生成する"""
+    """Gemini API（gemini-3.8-flash）を使用した要約・記事作成（429/503エラー自動再試行付き）"""
     prompt = f"""
-あなたは航空・交通業界専門のシニアアナリストです。
-以下のニュース記事を読み、業界実務担当者向けの要約・分析レポートを作成してください。
-※ニュースが英語の場合は、日本語に翻訳した上でレポートを作成してください。
+あなたは航空業界専門のシニアアナリスト兼ニュース編集長です。
+以下の航空関連ニュース情報を読み込み、業界実務者向けの「要約」「業界インパクト分析」「簡易ニュース解説記事」を作成してください。
 
 【ニュースタイトル】
 {title}
 
-【ニュース概要・本文】
+【ニュース本文・概要】
 {content}
 
 【出力フォーマット】
-以下の構成（Markdown形式）で出力してください。
-1. **📌 3行エグゼクティブサマリー**（重要なポイントを箇条書き3つで）
-2. **🔍 業界へのインパクト・分析**（路線・運賃・旅客・競合動向などへの影響）
-3. **🏷️️ 関連タグ**（例: #JAL #燃油サーチャージ #国際線）
+以下のMarkdown構成で出力してください。
+
+### 📌 1. 重要ポイント（3行サマリー）
+- 
+
+### 🔍 2. 業界へのインパクト・分析
+（路線・運賃・旅客需要・競合動向・航空会社経営などへの影響を解説）
+
+### 📝 3. 簡易ニュース解説記事
+（社内共有やブログ・SNS投稿にもそのまま使えるような200字程度の読みやすいニュース記事）
+
+### 🏷 関連キーワード・タグ
 """
 
-    # 503混雑時の最大3回自動リトライ
+    # レートリミット(429)や混雑(503)発生時の自動再試行ループ
     for attempt in range(3):
         try:
             response = client.models.generate_content(
@@ -126,47 +133,66 @@ def generate_ai_report(client, title, content):
             )
             return response.text
         except Exception as e:
-            if "503" in str(e) and attempt < 2:
+            err_msg = str(e)
+            # 429 (1分5回のリクエスト枠超過) が出たら30秒待機して自動リトライ
+            if "429" in err_msg and attempt < 2:
+                time.sleep(30)
+                continue
+            # 503 (サーバー一時高負荷) が出たら5秒待機して自動リトライ
+            elif "503" in err_msg and attempt < 2:
                 time.sleep(5)
                 continue
             raise e
 
 # ---------------------------------------------------------
-# 4. メイン処理・UI表示
+# 4. メイン処理 & プログレス表示
 # ---------------------------------------------------------
 if not api_key_input:
     st.warning("👈 サイドバーで Gemini API キーを入力してください。")
-    st.info("💡 APIキーは [Google AI Studio](https://aistudio.google.com/) でクレジットカード登録なしで無料発行できます。")
+    st.info("💡 キーは [Google AI Studio](https://aistudio.google.com/) で完全無料発行できます。")
     st.stop()
 
 # Gemini クライアント初期化
 client = genai.Client(api_key=api_key_input)
 
-# 実行ボタン
-if st.button("🔄 最新ニュースを取得してAI分析を実行", type="primary"):
-    with st.spinner("ニュースを取得してGeminiがレポートを作成中..."):
-        try:
-            articles = fetch_rss_news(rss_url, max_items=max_articles)
+if st.button("🚀 最新航空ニュースを検索してAIレポートを生成", type="primary"):
+    with st.spinner("🌐 Web上から最新航空ニュースを検索中..."):
+        articles = search_web_news(query_text, max_items=max_articles)
+        
+    if not articles:
+        st.error("ニュースの取得に失敗しました。検索キーワードを変更して再実行してください。")
+    else:
+        st.success(f"「{query_text}」に関する最新ニュースを {len(articles)} 件発見しました！要約処理を開始します。")
+        
+        # 全体処理のプログレスバー
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for idx, article in enumerate(articles, 1):
+            status_text.text(f"🤖 記事 {idx}/{len(articles)} を Gemini API で要約・記事化中...")
             
-            if not articles:
-                st.error("ニュース記事が取得できませんでした。検索キーワードや情報源を確認してください。")
-            else:
-                st.success(f"{len(articles)} 件の最新記事を取得・分析しました！")
+            with st.expander(f"【記事{idx}】{article['title']}", expanded=True):
+                st.write(f"🔗 **元記事:** [{article['title']}]({article['link']})（{article['published']}）")
                 
-                # 取得した記事ごとにAIで要約生成・表示
-                for idx, article in enumerate(articles, 1):
-                    with st.expander(f"【記事{idx}】{article['title']}", expanded=True):
-                        st.write(f"**元記事リンク:** [{article['title']}]({article['link']}) ({article['published']})")
-                        
-                        # AI要約生成
-                        report = generate_ai_report(client, article['title'], article['summary'])
-                        
-                        st.markdown("---")
-                        st.markdown(report)
-                        
-                        # レートリミット回避のため3秒待機
-                        if idx < len(articles):
-                            time.sleep(3)
-                        
-        except Exception as e:
-            st.error(f"エラーが発生しました: {e}")
+                # Gemini処理呼び出し
+                start_time = time.time()
+                report = generate_ai_report(client, article['title'], article['summary'])
+                elapsed_time = round(time.time() - start_time, 1)
+                
+                st.markdown("---")
+                st.markdown(report)
+                st.caption(f"⚡ AI生成完了時間: 約 {elapsed_time} 秒")
+                
+            # 進捗更新
+            progress_bar.progress(idx / len(articles))
+            
+            # 無料枠のレート制限（1分5回まで）に触れないよう、記事間に13秒の待機・カウントダウンを表示
+            if idx < len(articles):
+                countdown_placeholder = st.empty()
+                # 平均13秒のウェイトをカウントダウン表示で可視化
+                for wait_sec in range(13, 0, -1):
+                    countdown_placeholder.info(f"⏳ 無料枠のAPI連続リクエスト制限（5回/分）を回避するため、次の記事処理まで待機中... あと {wait_sec} 秒")
+                    time.sleep(1)
+                countdown_placeholder.empty()
+                
+        status_text.text("✨ すべてのニュースの要約・レポート生成が完了しました！")
