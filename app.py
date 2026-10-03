@@ -16,7 +16,7 @@ st.set_page_config(
 )
 
 st.title("✈️ 航空業界 AIニュースアナライザー & レポート生成")
-st.caption("Web上からワイドに最新の航空ニュースを取得し、Gemini APIが自動要約・業界分析・簡易記事を作成します。")
+st.caption("国内外の航空事故・インシデント・業界ニュースをワイドに自動収集し、Gemini APIが要約・リスク分析・簡易記事を作成します。")
 
 # ---------------------------------------------------------
 # 2. サイドバー（設定 & 検索条件）
@@ -33,12 +33,20 @@ with st.sidebar:
     )
     
     st.divider()
+    st.subheader("🌐 対象エリア選択")
+    region_mode = st.radio(
+        "検索対象エリア",
+        ["🇯🇵 日本国内メイン", "🌐 海外・グローバル（自動日本語翻訳）"]
+    )
+    
+    st.divider()
     st.subheader("🔍 ニュース検索設定")
     
     # 検索テーマ（キーワード）の選択・入力
     search_category = st.selectbox(
-        "プリセット検索カテゴリ",
+        "検索カテゴリ",
         [
+            "⚠️ 航空事故・インシデント・安全運航・トラブル",
             "航空業界全般（JAL / ANA / LCC / 航空路線）",
             "エアライン経営・国際線・燃油サーチャージ",
             "新型旅客機・ボーイング・エアバス（機材・製造）",
@@ -48,15 +56,26 @@ with st.sidebar:
     )
     
     if search_category == "✏️ 自由キーワード指定":
-        user_keyword = st.text_input("検索キーワードを入力", value="航空 路線")
+        user_keyword = st.text_input("検索キーワードを入力", value="航空 事故")
         query_text = user_keyword
     else:
-        category_map = {
-            "航空業界全般（JAL / ANA / LCC / 航空路線）": "航空 JAL ANA LCC 路線",
-            "エアライン経営・国際線・燃油サーチャージ": "航空 燃油サーチャージ 国際線 運賃",
-            "新型旅客機・ボーイング・エアバス（機材・製造）": "ボーイング エアバス 旅客機 航空機",
-            "空港・グランドハンドリング・管制・運航整備": "空港 管制 整備 グランドハンドリング 航空"
-        }
+        # カテゴリに応じたキーワードマッピング（海外検索用にも最適化）
+        if region_mode == "🇯🇵 日本国内メイン":
+            category_map = {
+                "⚠️ 航空事故・インシデント・安全運航・トラブル": "航空事故 インシデント 欠航 トラブル 安全運航",
+                "航空業界全般（JAL / ANA / LCC / 航空路線）": "航空 JAL ANA LCC 路線",
+                "エアライン経営・国際線・燃油サーチャージ": "航空 燃油サーチャージ 国際線 運賃",
+                "新型旅客機・ボーイング・エアバス（機材・製造）": "ボーイング エアバス 旅客機 航空機",
+                "空港・グランドハンドリング・管制・運航整備": "空港 管制 整備 グランドハンドリング 航空"
+            }
+        else:
+            category_map = {
+                "⚠️ 航空事故・インシデント・安全運航・トラブル": "aviation accident incident emergency safety crash",
+                "航空業界全般（JAL / ANA / LCC / 航空路線）": "airlines aviation flight route",
+                "エアライン経営・国際線・燃油サーチャージ": "airline finance fare fuel surcharge international flight",
+                "新型旅客機・ボーイング・エアバス（機材・製造）": "Boeing Airbus aircraft passenger plane",
+                "空港・グランドハンドリング・管制・運航整備": "airport ATC maintenance ground handling"
+            }
         query_text = category_map[search_category]
     
     max_articles = st.slider("取得・要約件数", min_value=1, max_value=5, value=3)
@@ -64,11 +83,14 @@ with st.sidebar:
 # ---------------------------------------------------------
 # 3. ニュース検索 ＆ AI処理関数
 # ---------------------------------------------------------
-def search_web_news(query, max_items=3):
-    """Google News RSS連携を利用してWeb全体から信頼性の高い最新航空ニュースを収集"""
+def search_web_news(query, region_mode, max_items=3):
+    """Google News RSS連携を利用して国内外からニュースを収集"""
     encoded_query = urllib.parse.quote(query)
-    # 日本国内の主要ニュースソースから最新ニュースを取得
-    rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ja&gl=JP&ceid=JP:ja"
+    
+    if region_mode == "🇯🇵 日本国内メイン":
+        rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ja&gl=JP&ceid=JP:ja"
+    else:
+        rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -85,7 +107,6 @@ def search_web_news(query, max_items=3):
         summary_raw = entry.get("summary", entry.get("description", ""))
         clean_summary = BeautifulSoup(summary_raw, "html.parser").get_text()
         
-        # 概要文が短い場合はタイトルで補填
         if len(clean_summary.strip()) < 15:
             clean_summary = f"タイトル: {entry.title}"
             
@@ -98,10 +119,11 @@ def search_web_news(query, max_items=3):
     return articles
 
 def generate_ai_report(client, title, content):
-    """Gemini API（gemini-3.8-flash）を使用した要約・記事作成（429/503エラー自動再試行付き）"""
+    """Gemini API（gemini-3.8-flash）を使用した要約・リスク分析・記事作成"""
     prompt = f"""
-あなたは航空業界専門のシニアアナリスト兼ニュース編集長です。
-以下の航空関連ニュース情報を読み込み、業界実務者向けの「要約」「業界インパクト分析」「簡易ニュース解説記事」を作成してください。
+あなたは航空業界専門のシニアアナリスト兼リスク管理専門家です。
+以下の航空関連ニュース（事故・インシデント・運航・経営等）を読み込み、業界実務者向けの「要約」「業界インパクト・安全面へのリスク分析」「簡易ニュース解説記事」を作成してください。
+※ニュースが英語の場合は、必ず自然で分かりやすい日本語に翻訳した上でレポートを作成してください。
 
 【ニュースタイトル】
 {title}
@@ -115,11 +137,11 @@ def generate_ai_report(client, title, content):
 ### 📌 1. 重要ポイント（3行サマリー）
 - 
 
-### 🔍 2. 業界へのインパクト・分析
-（路線・運賃・旅客需要・競合動向・航空会社経営などへの影響を解説）
+### 🔍 2. 業界へのインパクト・リスク分析
+（運航安全面への影響、ダイヤ乱れ・損害、業界・競合への影響、規制や再発防止策の動きなどを専門的視点で解説）
 
 ### 📝 3. 簡易ニュース解説記事
-（社内共有やブログ・SNS投稿にもそのまま使えるような200字程度の読みやすいニュース記事）
+（社内共有や速報レポートとしてそのまま使えるような200〜300字程度の読みやすいニュース解説記事）
 
 ### 🏷 関連キーワード・タグ
 """
@@ -155,21 +177,21 @@ if not api_key_input:
 # Gemini クライアント初期化
 client = genai.Client(api_key=api_key_input)
 
-if st.button("🚀 最新航空ニュースを検索してAIレポートを生成", type="primary"):
-    with st.spinner("🌐 Web上から最新航空ニュースを検索中..."):
-        articles = search_web_news(query_text, max_items=max_articles)
+if st.button("🚀 最新ニュースを検索してAIレポートを生成", type="primary"):
+    with st.spinner(f"🌐 [{region_mode}] 最新ニュースを検索中..."):
+        articles = search_web_news(query_text, region_mode, max_items=max_articles)
         
     if not articles:
-        st.error("ニュースの取得に失敗しました。検索キーワードを変更して再実行してください。")
+        st.error("ニュースの取得に失敗しました。検索キーワードやエリアを変更して再実行してください。")
     else:
-        st.success(f"「{query_text}」に関する最新ニュースを {len(articles)} 件発見しました！要約処理を開始します。")
+        st.success(f"「{query_text}」に関する最新ニュースを {len(articles)} 件発見しました！要約・分析処理を開始します。")
         
         # 全体処理のプログレスバー
         progress_bar = st.progress(0)
         status_text = st.empty()
         
         for idx, article in enumerate(articles, 1):
-            status_text.text(f"🤖 記事 {idx}/{len(articles)} を Gemini API で要約・記事化中...")
+            status_text.text(f"🤖 記事 {idx}/{len(articles)} を Gemini API で要約・分析中...")
             
             with st.expander(f"【記事{idx}】{article['title']}", expanded=True):
                 st.write(f"🔗 **元記事:** [{article['title']}]({article['link']})（{article['published']}）")
@@ -189,10 +211,9 @@ if st.button("🚀 最新航空ニュースを検索してAIレポートを生�
             # 無料枠のレート制限（1分5回まで）に触れないよう、記事間に13秒の待機・カウントダウンを表示
             if idx < len(articles):
                 countdown_placeholder = st.empty()
-                # 平均13秒のウェイトをカウントダウン表示で可視化
                 for wait_sec in range(13, 0, -1):
                     countdown_placeholder.info(f"⏳ 無料枠のAPI連続リクエスト制限（5回/分）を回避するため、次の記事処理まで待機中... あと {wait_sec} 秒")
                     time.sleep(1)
                 countdown_placeholder.empty()
                 
-        status_text.text("✨ すべてのニュースの要約・レポート生成が完了しました！")
+        status_text.text("✨ すべてのニュースの要約・リスク分析レポート生成が完了しました！")
