@@ -3,7 +3,7 @@ import feedparser
 import requests
 from bs4 import BeautifulSoup
 from google import genai
-import time  # 連続アクセス制御用のライブラリ
+import time  # 連続アクセス制御 & リトライ用
 
 # ---------------------------------------------------------
 # 1. ページ初期設定 & 画面タイトル
@@ -64,7 +64,7 @@ def fetch_rss_news(url, max_items=3):
     return articles
 
 def generate_ai_report(client, title, content):
-    """Gemini APIを使ってニュースのAI要約・分析記事を生成する"""
+    """Gemini API（gemini-3.8-flash）を使ってニュースのAI要約・分析記事を生成する"""
     prompt = f"""
 あなたは航空業界専門のシニアアナリストです。
 以下の航空関連ニュースを読み、業界実務担当者向けの要約レポートを作成してください。
@@ -83,12 +83,19 @@ def generate_ai_report(client, title, content):
 3. **🏷️ 関連タグ**（例: #JAL #燃油サーチャージ #国際線）
 """
 
-    # gemini-3.8-flash モデルを使って生成
-    response = client.models.generate_content(
-        model='gemini-3.8-flash',
-        contents=prompt
-    )
-    return response.text
+    # サーバー一時混雑(503)対策: 最大3回まで5秒間隔でリトライ
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model='gemini-3.8-flash',
+                contents=prompt
+            )
+            return response.text
+        except Exception as e:
+            if "503" in str(e) and attempt < 2:
+                time.sleep(5)
+                continue
+            raise e
 
 # ---------------------------------------------------------
 # 4. メイン処理・UI表示
@@ -123,7 +130,7 @@ if st.button("🔄 最新ニュースを取得してAI分析を実行", type="pr
                         st.markdown("---")
                         st.markdown(report)
                         
-                        # 連続リクエスト制限（レートリミット）回避のために3秒待機
+                        # 連続アクセス制御（レートリミット回避）のため3秒待機
                         if idx < len(articles):
                             time.sleep(3)
                         
