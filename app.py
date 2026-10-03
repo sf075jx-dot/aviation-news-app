@@ -83,9 +83,9 @@ def generate_ai_report(client, title, content):
 3. **🏷️ 関連タグ**（例: #JAL #燃油サーチャージ #国際線）
 """
 
-    # gemini-2.5-flash モデルを使って生成
+    # gemini-3.8-flash モデルを使って生成
     response = client.models.generate_content(
-        model='gemini-2.0-flash',
+        model='gemini-3.8-flash',
         contents=prompt
     )
     return response.text
