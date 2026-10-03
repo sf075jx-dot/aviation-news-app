@@ -3,6 +3,7 @@ import feedparser
 import requests
 from bs4 import BeautifulSoup
 from google import genai
+import time  # 連続アクセス制御用のライブラリ
 
 # ---------------------------------------------------------
 # 1. ページ初期設定 & 画面タイトル
@@ -121,6 +122,10 @@ if st.button("🔄 最新ニュースを取得してAI分析を実行", type="pr
                         
                         st.markdown("---")
                         st.markdown(report)
+                        
+                        # 連続リクエスト制限（レートリミット）回避のために3秒待機
+                        if idx < len(articles):
+                            time.sleep(3)
                         
         except Exception as e:
             st.error(f"エラーが発生しました: {e}")
