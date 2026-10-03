@@ -55,7 +55,7 @@ with st.sidebar:
             "TRAICY (航空・旅行全般)": "https://www.traicy.com/feed",
             "乗りものニュース (交通・航空)": "https://trafficnews.jp/feed",
             "Aviation Wire (国内航空)": "https://www.aviationwire.jp/feed",
-            "FlightGlobal (英語・海外航空)": "https://www.flightglobal.com/rss/news",
+            "FlightGlobal (英語・海外航空)": "https://www.flightglobal.com/category/air-transport/",
             "Google News (航空業界全般)": "https://news.google.com/rss/search?q=%E8%88%AA%E7%A9%BA&hl=ja&gl=JP&ceid=JP:ja"
         }
         selected_site = st.selectbox("情報源サイトを選択", list(site_options.keys()))
