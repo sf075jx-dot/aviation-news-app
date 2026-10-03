@@ -6,6 +6,7 @@ from google import genai
 from google.genai.errors import APIError
 import time
 import urllib.parse
+from difflib import SequenceMatcher
 
 # ---------------------------------------------------------
 # 1. ページ初期設定 & 画面タイトル
@@ -17,7 +18,7 @@ st.set_page_config(
 )
 
 st.title("✈️ 航空業界 AIニュースアナライザー & レポート生成")
-st.caption("国内外の航空事故・インシデント・業界ニュースをワイドに自動収集し、Gemini APIが要約・リスク分析・簡易記事を作成します。")
+st.caption("国内外の最新航空ニュースを重複なし・段階的期間検索で自動収集し、Gemini APIが要約・リスク分析・簡易記事を作成します。")
 
 # ---------------------------------------------------------
 # 2. サイドバー（設定 & 検索条件）
@@ -43,7 +44,6 @@ with st.sidebar:
     st.divider()
     st.subheader("🔍 ニュース検索設定")
     
-    # 検索テーマ（キーワード）の選択・入力
     search_category = st.selectbox(
         "検索カテゴリ",
         [
@@ -81,11 +81,29 @@ with st.sidebar:
     max_articles = st.slider("取得・要約件数", min_value=1, max_value=5, value=3)
 
 # ---------------------------------------------------------
-# 3. ニュース検索 ＆ AI処理関数
+# 3. ニュース重複検出・検索 ＆ AI処理関数
 # ---------------------------------------------------------
-def search_web_news(query, region_mode, max_items=3):
-    """Google News RSS連携を利用して国内外からニュースを収集"""
-    encoded_query = urllib.parse.quote(query)
+def is_similar(text1, text2, threshold=0.5):
+    """2つのタイトルの類似度を計算し、同一トピック（別サイト記事）かを判定"""
+    return SequenceMatcher(None, text1, text2).ratio() > threshold
+
+def deduplicate_articles(articles):
+    """同一・重複トピックの記事を除外（類似タイトルの場合は先着のみ残す）"""
+    unique_articles = []
+    for art in articles:
+        duplicate = False
+        for unique in unique_articles:
+            if is_similar(art["title"], unique["title"]):
+                duplicate = True
+                break
+        if not duplicate:
+            unique_articles.append(art)
+    return unique_articles
+
+def fetch_rss_by_time(query, region_mode, time_param):
+    """指定した期間パラメータ（when:1d, when:3d, when:7d）でRSSデータを取得"""
+    full_query = f"{query} {time_param}"
+    encoded_query = urllib.parse.quote(full_query)
     
     if region_mode == "🇯🇵 日本国内メイン":
         rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ja&gl=JP&ceid=JP:ja"
@@ -103,20 +121,53 @@ def search_web_news(query, region_mode, max_items=3):
         feed = feedparser.parse(rss_url)
 
     articles = []
-    for entry in feed.entries[:max_items]:
+    for entry in feed.entries:
         summary_raw = entry.get("summary", entry.get("description", ""))
         clean_summary = BeautifulSoup(summary_raw, "html.parser").get_text()
         
         if len(clean_summary.strip()) < 15:
             clean_summary = f"タイトル: {entry.title}"
             
+        published_parsed = entry.get("published_parsed", None)
+        
         articles.append({
             "title": entry.title,
             "link": entry.link,
             "published": entry.get("published", entry.get("updated", "最新")),
+            "published_parsed": published_parsed,
             "summary": clean_summary
         })
+    
+    # 最新順に並び替え
+    articles = sorted(
+        articles, 
+        key=lambda x: x["published_parsed"] if x["published_parsed"] else time.gmtime(0), 
+        reverse=True
+    )
     return articles
+
+def search_web_news_tiered(query, region_mode, max_items=3):
+    """24時間以内 ➔ 3日以内 ➔ 7日以内 と段階的に検索を広げ、重複カットして取得"""
+    periods = [
+        ("when:1d", "直近24時間以内"),
+        ("when:3d", "直近3日以内"),
+        ("when:7d", "直近7日以内")
+    ]
+    
+    found_articles = []
+    used_period_label = ""
+    
+    for time_param, label in periods:
+        raw_articles = fetch_rss_by_time(query, region_mode, time_param)
+        # 別サイトの類似記事（同一内容）を削除
+        unique_articles = deduplicate_articles(raw_articles)
+        
+        if unique_articles:
+            found_articles = unique_articles
+            used_period_label = label
+            break
+            
+    return found_articles[:max_items], used_period_label
 
 def generate_ai_report(client, title, content):
     """Gemini API（gemini-3.8-flash）を使用した要約・リスク分析・記事作成"""
@@ -146,7 +197,6 @@ def generate_ai_report(client, title, content):
 ### 🏷 関連キーワード・タグ
 """
 
-    # レート制限(429)や混雑(503)発生時の自動再試行ループ
     for attempt in range(3):
         try:
             response = client.models.generate_content(
@@ -156,16 +206,11 @@ def generate_ai_report(client, title, content):
             return response.text
         except APIError as e:
             err_msg = str(e)
-            
-            # 1日の上限数（Daily Quota）に達した場合はリトライせず分かりやすく通知
             if e.code == 429 and ("retry in" in err_msg or "h" in err_msg):
                 return "🚨 **1日あたりのGemini API無料利用上限に達しました。**\nサイドバーで【別のGemini APIキー】を入力するか、数時間後に再度お試しください。"
-            
-            # 1分あたりの連打制限(429)の場合は30秒待機して自動再試行
             if e.code == 429 and attempt < 2:
                 time.sleep(30)
                 continue
-            # ★サーバー混雑(503)の場合は10秒待機して自動再試行
             elif e.code == 503 and attempt < 2:
                 time.sleep(10)
                 continue
@@ -188,15 +233,14 @@ if not api_key_input:
 client = genai.Client(api_key=api_key_input)
 
 if st.button("🚀 最新ニュースを検索してAIレポートを生成", type="primary"):
-    with st.spinner(f"🌐 [{region_mode}] 最新ニュースを検索中..."):
-        articles = search_web_news(query_text, region_mode, max_items=max_articles)
+    with st.spinner(f"🌐 [{region_mode}] 最新ニュースを段階検索中..."):
+        articles, used_period = search_web_news_tiered(query_text, region_mode, max_items=max_articles)
         
     if not articles:
-        st.error("ニュースの取得に失敗しました。検索キーワードやエリアを変更して再実行してください。")
+        st.error("直近7日間以内のニュースが見つかりませんでした。検索キーワードを変更して再実行してください。")
     else:
-        st.success(f"「{query_text}」に関する最新ニュースを {len(articles)} 件発見しました！要約・分析処理を開始します。")
+        st.success(f"「{query_text}」に関する【{used_period}】のニュースを {len(articles)} 件（重複除外済み）発見しました！要約・分析処理を開始します。")
         
-        # 全体処理のプログレスバー
         progress_bar = st.progress(0)
         status_text = st.empty()
         
@@ -206,7 +250,6 @@ if st.button("🚀 最新ニュースを検索してAIレポートを生成", ty
             with st.expander(f"【記事{idx}】{article['title']}", expanded=True):
                 st.write(f"🔗 **元記事:** [{article['title']}]({article['link']})（{article['published']}）")
                 
-                # Gemini処理呼び出し
                 start_time = time.time()
                 report = generate_ai_report(client, article['title'], article['summary'])
                 elapsed_time = round(time.time() - start_time, 1)
@@ -215,10 +258,9 @@ if st.button("🚀 最新ニュースを検索してAIレポートを生成", ty
                 st.markdown(report)
                 st.caption(f"⚡ AI生成完了時間: 約 {elapsed_time} 秒")
                 
-            # 進捗更新
             progress_bar.progress(idx / len(articles))
             
-            # 無料枠のレート制限（1分5回まで）に触れないよう、記事間に13秒の待機・カウントダウンを表示
+            # 無料枠のレート制限（5回/分）回避のための13秒カウントダウン
             if idx < len(articles):
                 countdown_placeholder = st.empty()
                 for wait_sec in range(13, 0, -1):
