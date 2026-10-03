@@ -159,7 +159,6 @@ def search_web_news_tiered(query, region_mode, max_items=3):
     
     for time_param, label in periods:
         raw_articles = fetch_rss_by_time(query, region_mode, time_param)
-        # 別サイトの類似記事（同一内容）を削除
         unique_articles = deduplicate_articles(raw_articles)
         
         if unique_articles:
@@ -170,7 +169,7 @@ def search_web_news_tiered(query, region_mode, max_items=3):
     return found_articles[:max_items], used_period_label
 
 def generate_ai_report(client, title, content):
-    """Gemini API（gemini-3.8-flash）を使用した要約・リスク分析・記事作成"""
+    """Gemini API（gemini-3.8-flash）を使用（503混雑時は15秒間隔・最大5回自動リトライ）"""
     prompt = f"""
 あなたは航空業界専門のシニアアナリスト兼リスク管理専門家です。
 以下の航空関連ニュース（事故・インシデント・運航・経営等）を読み込み、業界実務者向けの「要約」「業界インパクト・安全面へのリスク分析」「簡易ニュース解説記事」を作成してください。
@@ -197,7 +196,9 @@ def generate_ai_report(client, title, content):
 ### 🏷 関連キーワード・タグ
 """
 
-    for attempt in range(3):
+    # ★混雑時対策: 最大5回（15秒間隔）まで粘り強くリトライ
+    max_retries = 5
+    for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
                 model='gemini-3.8-flash',
@@ -206,18 +207,22 @@ def generate_ai_report(client, title, content):
             return response.text
         except APIError as e:
             err_msg = str(e)
+            # 日上限エラーの検知
             if e.code == 429 and ("retry in" in err_msg or "h" in err_msg):
                 return "🚨 **1日あたりのGemini API無料利用上限に達しました。**\nサイドバーで【別のGemini APIキー】を入力するか、数時間後に再度お試しください。"
-            if e.code == 429 and attempt < 2:
+            
+            # 1分制限 (429) は30秒待機
+            if e.code == 429 and attempt < max_retries - 1:
                 time.sleep(30)
                 continue
-            elif e.code == 503 and attempt < 2:
-                time.sleep(10)
+            # ★サーバー混雑 (503) は15秒待機して最大5回再試行
+            elif e.code == 503 and attempt < max_retries - 1:
+                time.sleep(15)
                 continue
-            return f"⚠️ **APIエラーが発生しました (Code: {e.code}):** {e.message}"
+            return f"⚠️️ **APIエラーが発生しました (Code: {e.code}):** {e.message}"
         except Exception as e:
-            if attempt < 2:
-                time.sleep(10)
+            if attempt < max_retries - 1:
+                time.sleep(15)
                 continue
             return f"⚠️ **予期せぬエラーが発生しました:** {str(e)}"
 
@@ -260,7 +265,7 @@ if st.button("🚀 最新ニュースを検索してAIレポートを生成", ty
                 
             progress_bar.progress(idx / len(articles))
             
-            # 無料枠のレート制限（5回/分）回避のための13秒カウントダウン
+            # レート制限回避の13秒待機
             if idx < len(articles):
                 countdown_placeholder = st.empty()
                 for wait_sec in range(13, 0, -1):
