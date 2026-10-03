@@ -1,5 +1,5 @@
 streamlit
-openai
+google-genai
 feedparser
 beautifulsoup4
 requests
