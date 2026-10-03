@@ -3,6 +3,7 @@ import feedparser
 import requests
 from bs4 import BeautifulSoup
 from google import genai
+from google.genai.errors import APIError
 import time
 import urllib.parse
 
@@ -55,11 +56,10 @@ with st.sidebar:
         ]
     )
     
-    if search_category == "✏️ 自由キーワード指定":
+    if search_category == "✏️️ 自由キーワード指定":
         user_keyword = st.text_input("検索キーワードを入力", value="航空 事故")
         query_text = user_keyword
     else:
-        # カテゴリに応じたキーワードマッピング（海外検索用にも最適化）
         if region_mode == "🇯🇵 日本国内メイン":
             category_map = {
                 "⚠️ 航空事故・インシデント・安全運航・トラブル": "航空事故 インシデント 欠航 トラブル 安全運航",
@@ -146,7 +146,7 @@ def generate_ai_report(client, title, content):
 ### 🏷 関連キーワード・タグ
 """
 
-    # レートリミット(429)や混雑(503)発生時の自動再試行ループ
+    # レート制限(429)や混雑(503)発生時の自動再試行ループ
     for attempt in range(3):
         try:
             response = client.models.generate_content(
@@ -154,17 +154,19 @@ def generate_ai_report(client, title, content):
                 contents=prompt
             )
             return response.text
-        except Exception as e:
-            err_msg = str(e)
-            # 429 (1分5回のリクエスト枠超過) が出たら30秒待機して自動リトライ
-            if "429" in err_msg and attempt < 2:
+        except APIError as e:
+            if e.code == 429 and attempt < 2:
                 time.sleep(30)
                 continue
-            # 503 (サーバー一時高負荷) が出たら5秒待機して自動リトライ
-            elif "503" in err_msg and attempt < 2:
+            elif e.code == 503 and attempt < 2:
                 time.sleep(5)
                 continue
-            raise e
+            return f"⚠️ **APIエラーが発生しました (Code: {e.code}):** {e.message}"
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(5)
+                continue
+            return f"⚠️ **予期せぬエラーが発生しました:** {str(e)}"
 
 # ---------------------------------------------------------
 # 4. メイン処理 & プログレス表示
