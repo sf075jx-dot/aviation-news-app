@@ -3,7 +3,6 @@ import feedparser
 import requests
 from bs4 import BeautifulSoup
 import urllib.parse
-import urllib.request
 import json
 import os
 from google import genai
@@ -19,9 +18,9 @@ st.set_page_config(
 )
 
 st.title("✈️ 航空ニュース・アナライザー")
-st.caption("国内外の航空ニュースをスクレイピングし、Gemini APIで他業界や経済への波及効果まで深掘り分析します。")
+st.caption("国内外の航空ニュースをスクレイピングし、他業界や経済への波及効果まで深掘り分析します。")
 
-# Gemini API クライアント初期化（Streamlit Secrets 優先、次点で環境変数）
+# Gemini API クライアント初期化（※分析機能専用）
 api_key = st.secrets.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
 client = genai.Client(api_key=api_key) if api_key else None
 
@@ -70,36 +69,61 @@ with st.sidebar:
     exclude_spotter = st.checkbox("写真・スポッター系サイトを除外", value=True)
 
 # ---------------------------------------------------------
-# 3. 翻訳関数（Google Web Translate API 直接呼び出し）
+# 3. 翻訳処理（Gemini完全不使用・2重バックアップ構造）
 # ---------------------------------------------------------
 @st.cache_data(show_spinner=False)
-def translate_title_direct(text):
-    """Google翻訳の無料WebAPIを直接呼び出して日本語翻訳（Gemini不使用・高安定）"""
+def translate_title_without_gemini(text):
+    """
+    Gemini APIを絶対に使わずに日本語へ翻訳する関数。
+    第1優先: Google Web Translate
+    第2優先: MyMemory Free Translation API
+    """
     if not text or not text.strip():
         return text
-    
+
+    # --- 方法1: Google Translate Web API ---
     try:
         url = "https://translate.googleapis.com/translate_a/single"
         params = {
             "client": "gtx",
-            "sl": "auto",
+            "sl": "en",
             "tl": "ja",
             "dt": "t",
             "q": text
         }
-        full_url = f"{url}?{urllib.parse.urlencode(params)}"
-        req = urllib.request.Request(full_url, headers={'User-Agent': 'Mozilla/5.0'})
-        
-        with urllib.request.urlopen(req, timeout=5) as response:
-            result = json.loads(response.read().decode('utf-8'))
-            translated_parts = [item[0] for item in result[0] if item[0]]
-            return "".join(translated_parts)
-    except Exception as e:
-        # 失敗した場合は元のテキストをそのまま返し、ログ用エラー文字列を記録
-        return f"[翻訳エラー] {text}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        res = requests.get(url, params=params, headers=headers, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            translated_parts = [item[0] for item in data[0] if item[0]]
+            result_str = "".join(translated_parts)
+            if result_str and result_str != text:
+                return result_str
+    except Exception:
+        pass
+
+    # --- 方法2: MyMemory Translation API（バックアップ） ---
+    try:
+        url = "https://api.mymemory.translated.net/get"
+        params = {
+            "q": text,
+            "langpair": "en|ja"
+        }
+        res = requests.get(url, params=params, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            translated_str = data.get("responseData", {}).get("translatedText", "")
+            if translated_str and translated_str != text:
+                return translated_str
+    except Exception:
+        pass
+
+    return text
 
 # ---------------------------------------------------------
-# 4. Gemini API 関数（詳細分析専用）
+# 4. Gemini API 関数（※詳細分析ボタン専用）
 # ---------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def generate_gemini_summary(title, content, is_foreign=False):
@@ -202,18 +226,18 @@ if not articles:
     st.warning("直近のニュースが見つかりませんでした。カテゴリやキーワードを変更してください。")
 else:
     for idx, art in enumerate(articles, 1):
-        # 海外ニュース判定時、Google翻訳APIを使ってタイトルを日本語へ変換
+        # 海外ニュースの場合、Gemini不使用の二重バックアップ翻訳関数を実行
         if is_foreign:
-            translated = translate_title_direct(art['original_title'])
-            display_title = translated.replace("[翻訳エラー] ", "")
+            display_title = translate_title_without_gemini(art['original_title'])
         else:
             display_title = art['original_title']
         
         st.markdown(f"#### {idx}. [{display_title}]({art['link']})")
+        
         if is_foreign:
             st.caption(f"🔤 原題: {art['original_title']} | 📰 出所: {art['source']} | 🕒 日時: {art['published']}")
         else:
-            st.caption(f"📰 出所: {art['source']} | 🕒 日时: {art['published']}")
+            st.caption(f"📰 出所: {art['source']} | 🕒 日時: {art['published']}")
         
         with st.expander("📊 AI要約・経済影響分析を表示"):
             if st.button("📊 このニュースを詳細分析する", key=f"btn_{idx}"):
