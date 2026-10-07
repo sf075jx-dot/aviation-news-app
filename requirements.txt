@@ -1,5 +1,5 @@
 streamlit
-google-genai
 feedparser
-beautifulsoup4
 requests
+beautifulsoup4
+google-genai
