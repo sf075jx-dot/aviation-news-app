@@ -4,6 +4,7 @@ import requests
 from bs4 import BeautifulSoup
 import urllib.parse
 import os
+from deep_translator import GoogleTranslator
 from google import genai
 
 # ---------------------------------------------------------
@@ -17,7 +18,7 @@ st.set_page_config(
 )
 
 st.title("✈️ 航空ニュース・アナライザー")
-st.caption("国内外の航空ニュースをスクレイピングし、Gemini APIで日本語翻訳・他業界や経済への波及効果まで深掘り分析します。")
+st.caption("国内外の航空ニュースをスクレイピングし、Gemini APIで他業界や経済への波及効果まで深掘り分析します。")
 
 # Gemini API クライアント初期化（Streamlit Secrets 優先、次点で環境変数）
 api_key = st.secrets.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
@@ -68,23 +69,20 @@ with st.sidebar:
     exclude_spotter = st.checkbox("写真・スポッター系サイトを除外", value=True)
 
 # ---------------------------------------------------------
-# 3. Gemini API 関数（タイトル翻訳 / 詳細分析）
+# 3. 翻訳関数（Gemini不使用・GoogleTranslateライブラリ利用）
 # ---------------------------------------------------------
 @st.cache_data(show_spinner=False)
-def translate_title_to_japanese(title):
-    """ニュースタイトルを自然な日本語に翻訳"""
-    if not client:
-        return title
-    prompt = f"以下の英語の航空ニュースのタイトルを、自然で分かりやすい日本語に翻訳してください。余計な解説は含めず、翻訳後のタイトルのみを出力してください。\n\n【タイトル】\n{title}"
+def translate_title_translator(title):
+    """deep-translatorライブラリを使用してGoogle翻訳を実行（Gemini消費ゼロ）"""
     try:
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt
-        )
-        return response.text.strip()
+        translated = GoogleTranslator(source='auto', target='ja').translate(title)
+        return translated
     except Exception:
         return title
 
+# ---------------------------------------------------------
+# 4. Gemini API 関数（詳細分析専用）
+# ---------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def generate_gemini_summary(title, content, is_foreign=False):
     """他業界・経済への影響を含めた構造的分析記事を生成"""
@@ -129,7 +127,7 @@ def generate_gemini_summary(title, content, is_foreign=False):
         return f"分析レポートの生成に失敗しました: {e}"
 
 # ---------------------------------------------------------
-# 4. スクレイピング & スポッターサイト除去
+# 5. スクレイピング & スポッターサイト除去
 # ---------------------------------------------------------
 NG_DOMAINS = ["flyteam.jp", "planespotters.net", "jetphotos.com", "airliners.net"]
 NG_KEYWORDS = ["FlyTeam", "航空フォト", "機材写真", "特別塗装機", "PlaneSpotters", "JetPhotos"]
@@ -168,7 +166,7 @@ def fetch_news(query, region_mode, max_items, filter_spotter):
     return articles
 
 # ---------------------------------------------------------
-# 5. メイン表示エリア
+# 6. メイン表示エリア
 # ---------------------------------------------------------
 col1, col2 = st.columns([3, 1])
 with col1:
@@ -186,9 +184,9 @@ if not articles:
     st.warning("直近のニュースが見つかりませんでした。カテゴリやキーワードを変更してください。")
 else:
     for idx, art in enumerate(articles, 1):
-        # 海外ニュースの場合はタイトルを日本語に自動翻訳
+        # 海外ニュースの場合は deep-translator でタイトルを翻訳
         if is_foreign:
-            display_title = translate_title_to_japanese(art['original_title'])
+            display_title = translate_title_translator(art['original_title'])
         else:
             display_title = art['original_title']
         
