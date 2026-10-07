@@ -4,6 +4,8 @@ import requests
 from bs4 import BeautifulSoup
 import urllib.parse
 import os
+import re
+from difflib import SequenceMatcher
 from google import genai
 
 # ---------------------------------------------------------
@@ -104,7 +106,7 @@ def translate_title_without_gemini(text):
     return text
 
 # ---------------------------------------------------------
-# 4. 除外判定処理（ウィキペディア & 重複除去）
+# 4. 除外・重複判定処理
 # ---------------------------------------------------------
 def is_wikipedia(title, source, link):
     """ウィキペディア記事かどうかを判定"""
@@ -118,6 +120,22 @@ def is_wikipedia(title, source, link):
         "ウィキペディア" in title_lower or 
         "wikipedia" in title_lower
     )
+
+def clean_title_for_comparison(title):
+    """【速報】や記号などを除外し、純粋な文章部分だけを取り出す"""
+    # 【速報】[独自] などの囲み文字を削除
+    title = re.sub(r'【.*?】|\[.*?\]|\(.*?\)', '', title)
+    # 記号・スペースを除去して小文字化
+    title = re.sub(r'[^\w\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', '', title).lower()
+    return title
+
+def is_duplicate_title(new_clean_title, processed_clean_titles, threshold=0.75):
+    """すでに処理された記事タイトル群と類似度をチェック（デフォルト75%以上で重複と判定）"""
+    for past_title in processed_clean_titles:
+        similarity = SequenceMatcher(None, new_clean_title, past_title).ratio()
+        if similarity >= threshold:
+            return True
+    return False
 
 # ---------------------------------------------------------
 # 5. Gemini API 関数（※詳細分析ボタン専用）
@@ -166,10 +184,10 @@ def generate_gemini_summary(title, content, is_foreign=False):
         return f"分析レポートの生成に失敗しました: {e}"
 
 # ---------------------------------------------------------
-# 6. スクレイピング & ニュース取得（重複防止を追加）
+# 6. スクレイピング & ニュース取得（あいまい重複防止を搭載）
 # ---------------------------------------------------------
 def fetch_news(query, region_mode, max_items):
-    """Google News RSS からニュースを取得（Wikipedia除外 & タイトル重複排除）"""
+    """Google News RSS からニュースを取得（Wikipedia除外 & タイトル類似度重複排除）"""
     search_query = f"{query} -site:wikipedia.org when:3d"
 
     encoded_query = urllib.parse.quote(search_query)
@@ -178,7 +196,7 @@ def fetch_news(query, region_mode, max_items):
     
     feed = feedparser.parse(rss_url)
     articles = []
-    seen_titles = set()  # 重複判定用の集合
+    processed_clean_titles = []  # 比較用のクリーン化済みタイトルリスト
     
     for entry in feed.entries:
         title = entry.title.rsplit(" - ", 1)[0] if " - " in entry.title else entry.title
@@ -188,15 +206,17 @@ def fetch_news(query, region_mode, max_items):
         if is_wikipedia(title, source, entry.link):
             continue
 
-        # 2. タイトル重複チェック（表記揺れ吸収のため小文字・空白除去して比較）
-        normalized_title = title.lower().replace(" ", "")
-        if normalized_title in seen_titles:
+        # 2. 比較用にタイトルをクリーン化（【速報】や記号の除去）
+        clean_title = clean_title_for_comparison(title)
+
+        # 3. あいまい類似度判定（すでに採択した記事と75%以上類似していれば重複とみなす）
+        if is_duplicate_title(clean_title, processed_clean_titles, threshold=0.75):
             continue
-            
+
         summary_raw = BeautifulSoup(entry.get("summary", ""), "html.parser").get_text()
         
-        # チェックを通過した記事を追加し、タイトルを登録
-        seen_titles.add(normalized_title)
+        # チェック通過記事のタイトルを記録
+        processed_clean_titles.append(clean_title)
         articles.append({
             "original_title": title,
             "source": source,
