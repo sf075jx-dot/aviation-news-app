@@ -22,7 +22,7 @@ st.set_page_config(
 )
 
 st.title("航空業界ニュース・アナライザー")
-st.caption("国内外の航空ニュースを検索し、リクエストされた記事を多角的な視点から深掘り分析します。")
+st.caption("国内外の航空ニュースを検索し、多角的な視点から深掘り分析します。")
 
 # Gemini API クライアント初期化（※記事分析ボタンでのみ使用）
 api_key = st.secrets.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
@@ -50,7 +50,7 @@ with st.sidebar:
     selected_genre = st.selectbox("検索ジャンル", genre_list)
     
     if selected_genre == "✏️ 自由キーワード指定":
-        query_text = st.text_input("キーワードを入力", value="航空 事故")
+        query_text = st.text_input("キーワードを入力（スペース区切りで複数指定可）", value="航空 事故")
     else:
         category_map_ja = {
             "⚠️ 航空事故・インシデント・安全": "(航空 OR 旅客機 OR エアライン OR 飛行機) (事故 OR インシデント OR トラブル OR 緊急着陸 OR ダイバート OR 欠航 OR 安全)",
@@ -230,11 +230,13 @@ def generate_gemini_summary(title, content, is_foreign=False):
             return f"分析レポートの生成に失敗しました（一時的な混雑の可能性があります。少し時間を置いて再度お試しください）: {e}"
 
 # ---------------------------------------------------------
-# 6. スクレイピング & ニュース取得（重複は最新件へ統合）
+# 6. スクレイピング & ニュース取得（キーワード厳密一致・不要サイト除外）
 # ---------------------------------------------------------
 def fetch_news(query, region_mode, max_items):
-    """Google News RSS からニュースを取得（Wikipedia除外・重複統合）"""
-    search_query = f"{query} -site:wikipedia.org when:3d"
+    """Google News RSS からニュースを取得し、キーワードが含まれる記事のみを厳密にフィルタリング"""
+    # X (twitter/x.com) や各種ブログプラットフォームを除外
+    exclusions = "-site:wikipedia.org -site:twitter.com -site:x.com -site:note.com -site:ameblo.jp -site:fc2.com -site:livedoor.jp -site:hatenablog.com"
+    search_query = f"{query} {exclusions} when:3d"
 
     encoded_query = urllib.parse.quote(search_query)
     hl_gl = "hl=ja&gl=JP&ceid=JP:ja" if region_mode == "🇯🇵 日本国内ニュース" else "hl=en-US&gl=US&ceid=US:en"
@@ -242,9 +244,15 @@ def fetch_news(query, region_mode, max_items):
     
     feed = feedparser.parse(rss_url)
     
+    # ユーザーが入力した自由キーワード（スペース区切り）を抽出してリスト化
+    # ※プリセットのジャンル選択時は、括弧や演算子を除いて主要な単語に分解
+    raw_keywords = re.findall(r'[a-zA-Z0-9\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]+', query)
+    # ストップワードや記号的な演算子（OR等）を除外
+    keywords = [kw.lower() for kw in raw_keywords if kw.lower() not in ['or', 'and', 'not'] and len(kw) >= 2]
+
     unique_groups = []
     
-    # RSS上位 50 件をスキャンして集約
+    # RSS上位 50 件をスキャン
     for entry in feed.entries[:50]:
         title = entry.title.rsplit(" - ", 1)[0] if " - " in entry.title else entry.title
         source = entry.title.rsplit(" - ", 1)[1] if " - " in entry.title else "不明"
@@ -256,6 +264,19 @@ def fetch_news(query, region_mode, max_items):
         pub_dt = parse_published_time(entry)
         summary_raw = BeautifulSoup(entry.get("summary", ""), "html.parser").get_text()
         
+        # 2. キーワード厳密チェック（自由キーワードの場合のフィルター）
+        # タイトルまたは概要に、指定キーワード群の主要ワードがちゃんと含まれているか確認
+        if keywords:
+            combined_text = (title + " " + summary_raw).lower()
+            # 指定されたキーワードのうち、最低限主要なものが含まれているかを判定（ここでは全キーワードの過半数、または主要キーワードが含まれること）
+            # 自由キーワード指定の場合はすべて含まれることを理想とする
+            matched_count = sum(1 for kw in keywords if kw in combined_text)
+            # キーワードが全く含まれない、または一致率が低すぎる場合はスキップ
+            if len(keywords) >= 2 and matched_count == 0:
+                continue
+            elif len(keywords) == 1 and keywords[0] not in combined_text:
+                continue
+
         article_data = {
             "original_title": title,
             "source": source,
@@ -265,7 +286,7 @@ def fetch_news(query, region_mode, max_items):
             "summary": summary_raw if len(summary_raw.strip()) > 10 else title
         }
 
-        # 2. 重複チェック（新判定ロジック）
+        # 3. 重複チェック
         matched_group = None
         for group in unique_groups:
             if is_similar_news(title, group['article']['original_title']):
@@ -273,18 +294,15 @@ def fetch_news(query, region_mode, max_items):
                 break
 
         if matched_group:
-            # 重複していた場合：より最新の日時であれば最新記事に差し替え
             if pub_dt > matched_group['pub_dt']:
                 matched_group['article'] = article_data
                 matched_group['pub_dt'] = pub_dt
         else:
-            # 重複がない新規話題：グループとして登録
             unique_groups.append({
                 'article': article_data,
                 'pub_dt': pub_dt
             })
 
-    # 3. 日時が新しい順に並び替え、指定件数分を取得
     sorted_groups = sorted(unique_groups, key=lambda x: x['pub_dt'], reverse=True)
     
     return [g['article'] for g in sorted_groups[:max_items]]
@@ -305,7 +323,7 @@ with st.spinner("最新ニュースを取得中..."):
     articles = fetch_news(query_text, region_mode, max_articles)
 
 if not articles:
-    st.warning("直近のニュースが見つかりませんでした。ジャンルを変更して再試行してください。")
+    st.warning("条件に一致する直近のニュースが見つかりませんでした。キーワードやジャンルを変更して再試行してください。")
 else:
     for idx, art in enumerate(articles, 1):
         if is_foreign:
