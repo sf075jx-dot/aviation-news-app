@@ -3,8 +3,9 @@ import feedparser
 import requests
 from bs4 import BeautifulSoup
 import urllib.parse
+import urllib.request
+import json
 import os
-from deep_translator import GoogleTranslator
 from google import genai
 
 # ---------------------------------------------------------
@@ -69,16 +70,33 @@ with st.sidebar:
     exclude_spotter = st.checkbox("写真・スポッター系サイトを除外", value=True)
 
 # ---------------------------------------------------------
-# 3. 翻訳関数（Gemini不使用・GoogleTranslateライブラリ利用）
+# 3. 翻訳関数（Google Web Translate API 直接呼び出し）
 # ---------------------------------------------------------
 @st.cache_data(show_spinner=False)
-def translate_title_translator(title):
-    """deep-translatorライブラリを使用してGoogle翻訳を実行（Gemini消費ゼロ）"""
+def translate_title_direct(text):
+    """Google翻訳の無料WebAPIを直接呼び出して日本語翻訳（Gemini不使用・高安定）"""
+    if not text or not text.strip():
+        return text
+    
     try:
-        translated = GoogleTranslator(source='auto', target='ja').translate(title)
-        return translated
-    except Exception:
-        return title
+        url = "https://translate.googleapis.com/translate_a/single"
+        params = {
+            "client": "gtx",
+            "sl": "auto",
+            "tl": "ja",
+            "dt": "t",
+            "q": text
+        }
+        full_url = f"{url}?{urllib.parse.urlencode(params)}"
+        req = urllib.request.Request(full_url, headers={'User-Agent': 'Mozilla/5.0'})
+        
+        with urllib.request.urlopen(req, timeout=5) as response:
+            result = json.loads(response.read().decode('utf-8'))
+            translated_parts = [item[0] for item in result[0] if item[0]]
+            return "".join(translated_parts)
+    except Exception as e:
+        # 失敗した場合は元のテキストをそのまま返し、ログ用エラー文字列を記録
+        return f"[翻訳エラー] {text}"
 
 # ---------------------------------------------------------
 # 4. Gemini API 関数（詳細分析専用）
@@ -184,9 +202,10 @@ if not articles:
     st.warning("直近のニュースが見つかりませんでした。カテゴリやキーワードを変更してください。")
 else:
     for idx, art in enumerate(articles, 1):
-        # 海外ニュースの場合は deep-translator でタイトルを翻訳
+        # 海外ニュース判定時、Google翻訳APIを使ってタイトルを日本語へ変換
         if is_foreign:
-            display_title = translate_title_translator(art['original_title'])
+            translated = translate_title_direct(art['original_title'])
+            display_title = translated.replace("[翻訳エラー] ", "")
         else:
             display_title = art['original_title']
         
@@ -194,7 +213,7 @@ else:
         if is_foreign:
             st.caption(f"🔤 原題: {art['original_title']} | 📰 出所: {art['source']} | 🕒 日時: {art['published']}")
         else:
-            st.caption(f"📰 出所: {art['source']} | 🕒 日時: {art['published']}")
+            st.caption(f"📰 出所: {art['source']} | 🕒 日时: {art['published']}")
         
         with st.expander("📊 AI要約・経済影響分析を表示"):
             if st.button("📊 このニュースを詳細分析する", key=f"btn_{idx}"):
