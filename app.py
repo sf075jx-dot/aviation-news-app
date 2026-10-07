@@ -20,7 +20,7 @@ st.set_page_config(
 st.title("✈️ 航空ニュース・アナライザー")
 st.caption("国内外の航空ニュースをスクレイピングし、他業界や経済への波及効果まで深掘り分析します。")
 
-# Gemini API クライアント初期化（※詳細分析機能専用）
+# Gemini API クライアント初期化（※【厳禁ルール遵守】解説記事生成機能でのみ使用）
 api_key = st.secrets.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
 client = genai.Client(api_key=api_key) if api_key else None
 
@@ -28,13 +28,12 @@ if not api_key:
     st.warning("⚠️ `GEMINI_API_KEY` が設定されていません。Streamlit Community Cloudの Secrets または環境変数にAPIキーを設定してください。")
 
 # ---------------------------------------------------------
-# 2. サイドバー（ジャンル表示と裏側の高精度検索クエリマッピング）
+# 2. サイドバー（ジャンル表示と条件指定）
 # ---------------------------------------------------------
 with st.sidebar:
     st.header("⚙️ ニュース検索条件")
     region_mode = st.radio("対象エリア", ["🇯🇵 日本国内ニュース", "🌐 海外・グローバルニュース (英語)"])
     
-    # ユーザーが見る「シンプルなジャンル名」のリスト
     genre_list = [
         "⚠️ 航空事故・インシデント・安全",
         "✈️ 航空会社・路線・運航動向",
@@ -46,60 +45,42 @@ with st.sidebar:
     
     selected_genre = st.selectbox("検索ジャンル", genre_list)
     
-    # -----------------------------------------------------
-    # 裏側で実行される高精度な検索キーワード群
-    # -----------------------------------------------------
     if selected_genre == "✏️ 自由キーワード指定":
         query_text = st.text_input("キーワードを入力", value="航空 事故")
     else:
-        # 日本国内ニュース用の高関連性クエリ
         category_map_ja = {
-            "⚠️ 航空事故・インシデント・安全": '(航空 OR 旅客機 OR エアライン OR 飛行機) (事故 OR インシデント OR トラブル OR 緊急着陸 OR ダイバート OR 欠航 OR 安全 OR 鳥衝突) -ゲーム -映画 -プラモデル -フライトシミュレーター',
-            "✈️ 航空会社・路線・運航動向": '(JAL OR ANA OR LCC OR 航空会社 OR エアライン) (就航 OR 増便 OR 減便 OR 路線 OR 運航 OR 新路線 OR 撤退)',
-            "📈 エアライン経営・業績・燃油サーチャージ": '(航空 OR エアライン OR 航空会社) (業績 OR 決算 OR 燃油サーチャージ OR 運賃 OR 値上げ OR 旅客需要 OR 黒字 OR 赤字)',
-            "🛠️ 機材・航空機製造（ボーイング/エアバス）": '(ボーイング OR エアバス OR Boeing OR Airbus OR 旅客機) (納入 OR 不具合 OR 受注 OR 発注 OR 開発 OR エンジン OR 機体)',
-            "🏢 空港・グランドハンドリング・管制・整備": '(空港 OR 成田 OR 羽田 OR 関空 OR 中部空港) (管制 OR グランドハンドリング OR 人手不足 OR 整備 OR 混雑 OR 滑走路 OR 保安検査)'
+            "⚠️ 航空事故・インシデント・安全": "航空 事故 インシデント 緊急着陸 欠航 安全",
+            "✈️ 航空会社・路線・運航動向": "JAL ANA LCC 航空会社 路線 運航 就航 増便",
+            "📈 エアライン経営・業績・燃油サーチャージ": "航空 業績 決算 燃油サーチャージ 運賃 旅客需要",
+            "🛠️ 機材・航空機製造（ボーイング/エアバス）": "ボーイング エアバス Boeing Airbus 旅客機 機材 納入",
+            "🏢 空港・グランドハンドリング・管制・整備": "空港 管制 グランドハンドリング 整備 羽田 成田 関空"
         }
-        # 海外・グローバルニュース（英語）用の高関連性クエリ
         category_map_en = {
-            "⚠️ 航空事故・インシデント・安全": '(aviation OR airline OR aircraft OR flight) (accident OR incident OR "emergency landing" OR grounded OR safety OR crash OR divert) -sim -game -movie -toy',
-            "✈️ 航空会社・路線・運航動向": '(airline OR "air carrier" OR aviation) (route OR flight OR expansion OR frequency OR cancellation OR "new service")',
-            "📈 エアライン経営・業績・燃油サーチャージ": '(airline OR aviation OR "air carrier") (revenue OR profit OR "fuel surcharge" OR fare OR demand OR earnings OR loss)',
-            "🛠️ 機材・航空機製造（ボーイング/エアバス）": '(Boeing OR Airbus OR "commercial aircraft") (delivery OR order OR flaw OR engine OR fleet OR delay OR jet)',
-            "🏢 空港・グランドハンドリング・管制・整備": '(airport OR ATC OR "air traffic control") (delay OR "ground handling" OR staffing OR maintenance OR congestion OR runway)'
+            "⚠️ 航空事故・インシデント・安全": "aviation accident incident emergency landing safety grounded",
+            "✈️ 航空会社・路線・運航動向": "airline route flight expansion frequency cancellation",
+            "📈 エアライン経営・業績・燃油サーチャージ": "airline revenue profit fuel surcharge fare demand",
+            "🛠️ 機材・航空機製造（ボーイング/エアバス）": "Boeing Airbus aircraft delivery order flaw fleet",
+            "🏢 空港・グランドハンドリング・管制・整備": "airport ATC air traffic control delay ground handling maintenance"
         }
         
         query_text = category_map_ja[selected_genre] if region_mode == "🇯🇵 日本国内ニュース" else category_map_en[selected_genre]
 
     max_articles = st.slider("表示件数", min_value=3, max_value=15, value=5)
-    exclude_spotter = st.checkbox("写真・スポッター系サイトを除外", value=True)
+    exclude_spotter = st.checkbox("写真・スポッター・ゴシップ系サイトを除外", value=True)
 
 # ---------------------------------------------------------
-# 3. 翻訳処理（Gemini完全不使用・2重バックアップ構造）
+# 3. 翻訳処理（Gemini完全不使用）
 # ---------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def translate_title_without_gemini(text):
-    """
-    Gemini APIを絶対に使わずに日本語へ翻訳する関数。
-    第1優先: Google Web Translate
-    第2優先: MyMemory Free Translation API
-    """
+    """Gemini APIを絶対に使わずに日本語へ翻訳する関数"""
     if not text or not text.strip():
         return text
 
-    # --- 方法1: Google Translate Web API ---
     try:
         url = "https://translate.googleapis.com/translate_a/single"
-        params = {
-            "client": "gtx",
-            "sl": "en",
-            "tl": "ja",
-            "dt": "t",
-            "q": text
-        }
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
+        params = {"client": "gtx", "sl": "en", "tl": "ja", "dt": "t", "q": text}
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         res = requests.get(url, params=params, headers=headers, timeout=5)
         if res.status_code == 200:
             data = res.json()
@@ -110,13 +91,9 @@ def translate_title_without_gemini(text):
     except Exception:
         pass
 
-    # --- 方法2: MyMemory Translation API（バックアップ） ---
     try:
         url = "https://api.mymemory.translated.net/get"
-        params = {
-            "q": text,
-            "langpair": "en|ja"
-        }
+        params = {"q": text, "langpair": "en|ja"}
         res = requests.get(url, params=params, timeout=5)
         if res.status_code == 200:
             data = res.json()
@@ -129,7 +106,43 @@ def translate_title_without_gemini(text):
     return text
 
 # ---------------------------------------------------------
-# 4. Gemini API 関数（※詳細分析ボタン専用）
+# 4. ノイズ・海外メディア排除判定（Gemini不使用のコード処理）
+# ---------------------------------------------------------
+# 海外系メディア（日本語版含む）の除外リスト
+EXCLUDE_OVERSEAS_SOURCES = [
+    "BBC", "CNN", "AFP", "Reuters", "ロイター", "Bloomberg", "ブルームバーグ",
+    "AP通信", "The New York Times", "WSJ", "ウォール・ストリート・ジャーナル"
+]
+
+# 写真・ゴシップ・事故トラブル系メディア＆キーワードの除外リスト
+NG_DOMAINS = ["flyteam.jp", "planespotters.net", "jetphotos.com", "airliners.net", "encount.press"]
+NG_KEYWORDS = [
+    "FlyTeam", "航空フォト", "機材写真", "特別塗装機", "PlaneSpotters", "JetPhotos",
+    "ENCOUNT", "観客", "顔面", "直撃", "鼻血", "怪我", "けが", "マナー", "炎上", "悲鳴", "物議"
+]
+
+def is_unwanted_article(title, source, link, is_domestic_mode, filter_spotter):
+    """Pythonコードのみで不要な記事（海外メディア・ゴシップ記事）を自動判定"""
+    link_lower = link.lower()
+    source_lower = source.lower()
+    title_lower = title.lower()
+
+    # 1. 国内モード時に海外メディアをカット
+    if is_domestic_mode:
+        if any(s.lower() in source_lower for s in EXCLUDE_OVERSEAS_SOURCES):
+            return True
+
+    # 2. スポッター・ゴシップ・トラブル記事をカット
+    if filter_spotter:
+        if any(d in link_lower for d in NG_DOMAINS):
+            return True
+        if any(k.lower() in source_lower or k.lower() in title_lower for k in NG_KEYWORDS):
+            return True
+
+    return False
+
+# ---------------------------------------------------------
+# 5. Gemini API 関数（※【唯一のGemini利用箇所】詳細分析ボタン専用）
 # ---------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def generate_gemini_summary(title, content, is_foreign=False):
@@ -175,19 +188,20 @@ def generate_gemini_summary(title, content, is_foreign=False):
         return f"分析レポートの生成に失敗しました: {e}"
 
 # ---------------------------------------------------------
-# 5. スクレイピング & スポッターサイト除去
+# 6. スクレイピング & ニュース取得
 # ---------------------------------------------------------
-NG_DOMAINS = ["flyteam.jp", "planespotters.net", "jetphotos.com", "airliners.net"]
-NG_KEYWORDS = ["FlyTeam", "航空フォト", "機材写真", "特別塗装機", "PlaneSpotters", "JetPhotos"]
-
-def is_spotter_site(title, source, link):
-    """写真メイン・スポッター系サイトを判定"""
-    return any(d in link.lower() for d in NG_DOMAINS) or any(k.lower() in source.lower() or k.lower() in title.lower() for k in NG_KEYWORDS)
-
 def fetch_news(query, region_mode, max_items, filter_spotter):
     """Google News RSS からニュースを取得"""
-    encoded_query = urllib.parse.quote(f"{query} when:3d")
-    hl_gl = "hl=ja&gl=JP&ceid=JP:ja" if region_mode == "🇯🇵 日本国内ニュース" else "hl=en-US&gl=US&ceid=US:en"
+    is_domestic_mode = (region_mode == "🇯🇵 日本国内ニュース")
+    
+    # 検索クエリにも事前に除外コマンドを付与（検索エンジンの段階でカット）
+    if is_domestic_mode:
+        search_query = f"{query} -site:bbc.com -site:reuters.com -site:cnn.co.jp -ENCOUNT when:3d"
+    else:
+        search_query = f"{query} when:3d"
+
+    encoded_query = urllib.parse.quote(search_query)
+    hl_gl = "hl=ja&gl=JP&ceid=JP:ja" if is_domestic_mode else "hl=en-US&gl=US&ceid=US:en"
     rss_url = f"https://news.google.com/rss/search?q={encoded_query}&{hl_gl}"
     
     feed = feedparser.parse(rss_url)
@@ -197,7 +211,8 @@ def fetch_news(query, region_mode, max_items, filter_spotter):
         title = entry.title.rsplit(" - ", 1)[0] if " - " in entry.title else entry.title
         source = entry.title.rsplit(" - ", 1)[1] if " - " in entry.title else "不明"
         
-        if filter_spotter and is_spotter_site(title, source, entry.link):
+        # Pythonコードによる厳格フィルター（Gemini不使用）
+        if is_unwanted_article(title, source, entry.link, is_domestic_mode, filter_spotter):
             continue
             
         summary_raw = BeautifulSoup(entry.get("summary", ""), "html.parser").get_text()
@@ -214,7 +229,7 @@ def fetch_news(query, region_mode, max_items, filter_spotter):
     return articles
 
 # ---------------------------------------------------------
-# 6. メイン表示エリア
+# 7. メイン表示エリア
 # ---------------------------------------------------------
 col1, col2 = st.columns([3, 1])
 with col1:
@@ -225,11 +240,11 @@ with col2:
 
 is_foreign = (region_mode == "🌐 海外・グローバルニュース (英語)")
 
-with st.spinner("最新ニュースを取得・処理中..."):
+with st.spinner("最新ニュースを取得中..."):
     articles = fetch_news(query_text, region_mode, max_articles, exclude_spotter)
 
 if not articles:
-    st.warning("直近のニュースが見つかりませんでした。ジャンルやキーワードを変更してください。")
+    st.warning("直近のニュースが見つかりませんでした。ジャンルを変更して再試行してください。")
 else:
     for idx, art in enumerate(articles, 1):
         if is_foreign:
