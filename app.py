@@ -5,6 +5,8 @@ from bs4 import BeautifulSoup
 import urllib.parse
 import os
 import re
+import datetime
+from email.utils import parsedate_to_datetime
 from difflib import SequenceMatcher
 from google import genai
 
@@ -106,7 +108,7 @@ def translate_title_without_gemini(text):
     return text
 
 # ---------------------------------------------------------
-# 4. 除外・重複判定処理
+# 4. 除外・判定ヘルパー関数
 # ---------------------------------------------------------
 def is_wikipedia(title, source, link):
     """ウィキペディア記事かどうかを判定"""
@@ -122,20 +124,22 @@ def is_wikipedia(title, source, link):
     )
 
 def clean_title_for_comparison(title):
-    """【速報】や記号などを除外し、純粋な文章部分だけを取り出す"""
-    # 【速報】[独自] などの囲み文字を削除
+    """【速報】やメディア名、記号などを除去し、核心テキストのみ抽出"""
     title = re.sub(r'【.*?】|\[.*?\]|\(.*?\)', '', title)
-    # 記号・スペースを除去して小文字化
     title = re.sub(r'[^\w\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', '', title).lower()
     return title
 
-def is_duplicate_title(new_clean_title, processed_clean_titles, threshold=0.75):
-    """すでに処理された記事タイトル群と類似度をチェック（デフォルト75%以上で重複と判定）"""
-    for past_title in processed_clean_titles:
-        similarity = SequenceMatcher(None, new_clean_title, past_title).ratio()
-        if similarity >= threshold:
-            return True
-    return False
+def parse_published_time(entry):
+    """RSSのpublished文字列をdatetimeオブジェクトに変換"""
+    if hasattr(entry, 'published_parsed') and entry.published_parsed:
+        try:
+            return datetime.datetime(*entry.published_parsed[:6])
+        except Exception:
+            pass
+    try:
+        return parsedate_to_datetime(entry.get('published', ''))
+    except Exception:
+        return datetime.datetime.min
 
 # ---------------------------------------------------------
 # 5. Gemini API 関数（※詳細分析ボタン専用）
@@ -184,10 +188,10 @@ def generate_gemini_summary(title, content, is_foreign=False):
         return f"分析レポートの生成に失敗しました: {e}"
 
 # ---------------------------------------------------------
-# 6. スクレイピング & ニュース取得（あいまい重複防止を搭載）
+# 6. スクレイピング & ニュース取得（重複統合・最新化）
 # ---------------------------------------------------------
 def fetch_news(query, region_mode, max_items):
-    """Google News RSS からニュースを取得（Wikipedia除外 & タイトル類似度重複排除）"""
+    """Google News RSS からニュースを取得（同一話題は最新1件に統合）"""
     search_query = f"{query} -site:wikipedia.org when:3d"
 
     encoded_query = urllib.parse.quote(search_query)
@@ -195,10 +199,12 @@ def fetch_news(query, region_mode, max_items):
     rss_url = f"https://news.google.com/rss/search?q={encoded_query}&{hl_gl}"
     
     feed = feedparser.parse(rss_url)
-    articles = []
-    processed_clean_titles = []  # 比較用のクリーン化済みタイトルリスト
     
-    for entry in feed.entries:
+    # 統合グループの保持リスト: [{ 'clean_title': str, 'article': dict, 'pub_dt': datetime }]
+    unique_groups = []
+    
+    # RSSの上位40件を全スキャンして同じ話題をグルーピング
+    for entry in feed.entries[:40]:
         title = entry.title.rsplit(" - ", 1)[0] if " - " in entry.title else entry.title
         source = entry.title.rsplit(" - ", 1)[1] if " - " in entry.title else "不明"
         
@@ -206,29 +212,45 @@ def fetch_news(query, region_mode, max_items):
         if is_wikipedia(title, source, entry.link):
             continue
 
-        # 2. 比較用にタイトルをクリーン化（【速報】や記号の除去）
         clean_title = clean_title_for_comparison(title)
-
-        # 3. あいまい類似度判定（すでに採択した記事と75%以上類似していれば重複とみなす）
-        if is_duplicate_title(clean_title, processed_clean_titles, threshold=0.75):
-            continue
-
+        pub_dt = parse_published_time(entry)
         summary_raw = BeautifulSoup(entry.get("summary", ""), "html.parser").get_text()
         
-        # チェック通過記事のタイトルを記録
-        processed_clean_titles.append(clean_title)
-        articles.append({
+        article_data = {
             "original_title": title,
             "source": source,
             "link": entry.link,
             "published": entry.get("published", "最新"),
+            "pub_dt": pub_dt,
             "summary": summary_raw if len(summary_raw.strip()) > 10 else title
-        })
-        
-        if len(articles) >= max_items:
-            break
-            
-    return articles
+        }
+
+        # 2. すでに登録済みのグループに類似するものがあるかチェック（類似度60%以上）
+        matched_group = None
+        for group in unique_groups:
+            similarity = SequenceMatcher(None, clean_title, group['clean_title']).ratio()
+            if similarity >= 0.60:
+                matched_group = group
+                break
+
+        if matched_group:
+            # 重複していた場合：保持している記事より新しい日時であれば、最新記事に差し替え
+            if pub_dt > matched_group['pub_dt']:
+                matched_group['clean_title'] = clean_title
+                matched_group['article'] = article_data
+                matched_group['pub_dt'] = pub_dt
+        else:
+            # 重複がない新規話題の場合：グループとして登録
+            unique_groups.append({
+                'clean_title': clean_title,
+                'article': article_data,
+                'pub_dt': pub_dt
+            })
+
+    # 3. 日時が新しい順にソートして、重複のないユニークなニュースのみを表示件数分抽出
+    sorted_groups = sorted(unique_groups, key=lambda x: x['pub_dt'], reverse=True)
+    
+    return [g['article'] for g in sorted_groups[:max_items]]
 
 # ---------------------------------------------------------
 # 7. メイン表示エリア
