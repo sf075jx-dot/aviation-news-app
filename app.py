@@ -3,7 +3,6 @@ import feedparser
 import requests
 from bs4 import BeautifulSoup
 import urllib.parse
-import json
 import os
 from google import genai
 
@@ -105,7 +104,7 @@ def translate_title_without_gemini(text):
     return text
 
 # ---------------------------------------------------------
-# 4. ウィキペディア判定処理
+# 4. 除外判定処理（ウィキペディア & 重複除去）
 # ---------------------------------------------------------
 def is_wikipedia(title, source, link):
     """ウィキペディア記事かどうかを判定"""
@@ -167,11 +166,10 @@ def generate_gemini_summary(title, content, is_foreign=False):
         return f"分析レポートの生成に失敗しました: {e}"
 
 # ---------------------------------------------------------
-# 6. スクレイピング & ニュース取得
+# 6. スクレイピング & ニュース取得（重複防止を追加）
 # ---------------------------------------------------------
 def fetch_news(query, region_mode, max_items):
-    """Google News RSS からニュースを取得（Wikipediaのみ除外）"""
-    # 検索クエリレベルでも Wikipedia を除外
+    """Google News RSS からニュースを取得（Wikipedia除外 & タイトル重複排除）"""
     search_query = f"{query} -site:wikipedia.org when:3d"
 
     encoded_query = urllib.parse.quote(search_query)
@@ -180,16 +178,25 @@ def fetch_news(query, region_mode, max_items):
     
     feed = feedparser.parse(rss_url)
     articles = []
+    seen_titles = set()  # 重複判定用の集合
     
     for entry in feed.entries:
         title = entry.title.rsplit(" - ", 1)[0] if " - " in entry.title else entry.title
         source = entry.title.rsplit(" - ", 1)[1] if " - " in entry.title else "不明"
         
-        # ウィキペディアを除外
+        # 1. ウィキペディアを除外
         if is_wikipedia(title, source, entry.link):
+            continue
+
+        # 2. タイトル重複チェック（表記揺れ吸収のため小文字・空白除去して比較）
+        normalized_title = title.lower().replace(" ", "")
+        if normalized_title in seen_titles:
             continue
             
         summary_raw = BeautifulSoup(entry.get("summary", ""), "html.parser").get_text()
+        
+        # チェックを通過した記事を追加し、タイトルを登録
+        seen_titles.add(normalized_title)
         articles.append({
             "original_title": title,
             "source": source,
@@ -197,6 +204,7 @@ def fetch_news(query, region_mode, max_items):
             "published": entry.get("published", "最新"),
             "summary": summary_raw if len(summary_raw.strip()) > 10 else title
         })
+        
         if len(articles) >= max_items:
             break
             
