@@ -20,7 +20,7 @@ st.set_page_config(
 st.title("✈️ 航空ニュース・アナライザー")
 st.caption("国内外の航空ニュースをスクレイピングし、他業界や経済への波及効果まで深掘り分析します。")
 
-# Gemini API クライアント初期化（※分析機能専用）
+# Gemini API クライアント初期化（※詳細分析機能専用）
 api_key = st.secrets.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
 client = genai.Client(api_key=api_key) if api_key else None
 
@@ -28,42 +28,48 @@ if not api_key:
     st.warning("⚠️ `GEMINI_API_KEY` が設定されていません。Streamlit Community Cloudの Secrets または環境変数にAPIキーを設定してください。")
 
 # ---------------------------------------------------------
-# 2. サイドバー（条件指定）
+# 2. サイドバー（ジャンル表示と裏側の高精度検索クエリマッピング）
 # ---------------------------------------------------------
 with st.sidebar:
     st.header("⚙️ ニュース検索条件")
     region_mode = st.radio("対象エリア", ["🇯🇵 日本国内ニュース", "🌐 海外・グローバルニュース (英語)"])
     
-    search_category = st.selectbox(
-        "検索カテゴリ",
-        [
-            "⚠️ 航空事故・インシデント・安全・トラブル",
-            "航空会社・運航（JAL / ANA / LCC / 路線）",
-            "エアライン経営・国際線・燃油サーチャージ",
-            "機材・製造（ボーイング / エアバス / 新型機）",
-            "空港・グランドハンドリング・管制・整備",
-            "✏️ 自由キーワード指定"
-        ]
-    )
+    # ユーザーが見る「シンプルなジャンル名」のリスト
+    genre_list = [
+        "⚠️ 航空事故・インシデント・安全",
+        "✈️ 航空会社・路線・運航動向",
+        "📈 エアライン経営・業績・燃油サーチャージ",
+        "🛠️ 機材・航空機製造（ボーイング/エアバス）",
+        "🏢 空港・グランドハンドリング・管制・整備",
+        "✏️ 自由キーワード指定"
+    ]
     
-    if search_category == "✏️ 自由キーワード指定":
+    selected_genre = st.selectbox("検索ジャンル", genre_list)
+    
+    # -----------------------------------------------------
+    # 裏側で実行される高精度な検索キーワード群
+    # -----------------------------------------------------
+    if selected_genre == "✏️ 自由キーワード指定":
         query_text = st.text_input("キーワードを入力", value="航空 事故")
     else:
+        # 日本国内ニュース用の高関連性クエリ
         category_map_ja = {
-            "⚠️ 航空事故・インシデント・安全・トラブル": "航空事故 インシデント 欠航 トラブル 安全運航",
-            "航空会社・運航（JAL / ANA / LCC / 路線）": "航空 JAL ANA LCC 路線",
-            "エアライン経営・国際線・燃油サーチャージ": "航空 燃油サーチャージ 国際線 運賃",
-            "機材・製造（ボーイング / エアバス / 新型機）": "ボーイング エアバス 旅客機 航空機",
-            "空港・グランドハンドリング・管制・整備": "空港 管制 整備 グランドハンドリング 航空"
+            "⚠️ 航空事故・インシデント・安全": '(航空 OR 旅客機 OR エアライン OR 飛行機) (事故 OR インシデント OR トラブル OR 緊急着陸 OR ダイバート OR 欠航 OR 安全 OR 鳥衝突) -ゲーム -映画 -プラモデル -フライトシミュレーター',
+            "✈️ 航空会社・路線・運航動向": '(JAL OR ANA OR LCC OR 航空会社 OR エアライン) (就航 OR 増便 OR 減便 OR 路線 OR 運航 OR 新路線 OR 撤退)',
+            "📈 エアライン経営・業績・燃油サーチャージ": '(航空 OR エアライン OR 航空会社) (業績 OR 決算 OR 燃油サーチャージ OR 運賃 OR 値上げ OR 旅客需要 OR 黒字 OR 赤字)',
+            "🛠️ 機材・航空機製造（ボーイング/エアバス）": '(ボーイング OR エアバス OR Boeing OR Airbus OR 旅客機) (納入 OR 不具合 OR 受注 OR 発注 OR 開発 OR エンジン OR 機体)',
+            "🏢 空港・グランドハンドリング・管制・整備": '(空港 OR 成田 OR 羽田 OR 関空 OR 中部空港) (管制 OR グランドハンドリング OR 人手不足 OR 整備 OR 混雑 OR 滑走路 OR 保安検査)'
         }
+        # 海外・グローバルニュース（英語）用の高関連性クエリ
         category_map_en = {
-            "⚠️ 航空事故・インシデント・安全・トラブル": "aviation accident incident emergency safety crash",
-            "航空会社・運航（JAL / ANA / LCC / 路線）": "airlines aviation flight route",
-            "エアライン経営・国際線・燃油サーチャージ": "airline finance fare fuel surcharge international flight",
-            "機材・製造（ボーイング / エアバス / 新型機）": "Boeing Airbus aircraft passenger plane",
-            "空港・グランドハンドリング・管制・整備": "airport ATC maintenance ground handling"
+            "⚠️ 航空事故・インシデント・安全": '(aviation OR airline OR aircraft OR flight) (accident OR incident OR "emergency landing" OR grounded OR safety OR crash OR divert) -sim -game -movie -toy',
+            "✈️ 航空会社・路線・運航動向": '(airline OR "air carrier" OR aviation) (route OR flight OR expansion OR frequency OR cancellation OR "new service")',
+            "📈 エアライン経営・業績・燃油サーチャージ": '(airline OR aviation OR "air carrier") (revenue OR profit OR "fuel surcharge" OR fare OR demand OR earnings OR loss)',
+            "🛠️ 機材・航空機製造（ボーイング/エアバス）": '(Boeing OR Airbus OR "commercial aircraft") (delivery OR order OR flaw OR engine OR fleet OR delay OR jet)',
+            "🏢 空港・グランドハンドリング・管制・整備": '(airport OR ATC OR "air traffic control") (delay OR "ground handling" OR staffing OR maintenance OR congestion OR runway)'
         }
-        query_text = category_map_ja[search_category] if region_mode == "🇯🇵 日本国内ニュース" else category_map_en[search_category]
+        
+        query_text = category_map_ja[selected_genre] if region_mode == "🇯🇵 日本国内ニュース" else category_map_en[selected_genre]
 
     max_articles = st.slider("表示件数", min_value=3, max_value=15, value=5)
     exclude_spotter = st.checkbox("写真・スポッター系サイトを除外", value=True)
@@ -212,21 +218,20 @@ def fetch_news(query, region_mode, max_items, filter_spotter):
 # ---------------------------------------------------------
 col1, col2 = st.columns([3, 1])
 with col1:
-    st.subheader(f"📡 取得カテゴリ: `{search_category}`")
+    st.subheader(f"📡 取得ジャンル: `{selected_genre}`")
 with col2:
     if st.button("🔄 最新に更新", type="primary"):
         st.cache_data.clear()
 
 is_foreign = (region_mode == "🌐 海外・グローバルニュース (英語)")
 
-with st.spinner("最新ニュースを取得・翻訳中..."):
+with st.spinner("最新ニュースを取得・処理中..."):
     articles = fetch_news(query_text, region_mode, max_articles, exclude_spotter)
 
 if not articles:
-    st.warning("直近のニュースが見つかりませんでした。カテゴリやキーワードを変更してください。")
+    st.warning("直近のニュースが見つかりませんでした。ジャンルやキーワードを変更してください。")
 else:
     for idx, art in enumerate(articles, 1):
-        # 海外ニュースの場合、Gemini不使用の二重バックアップ翻訳関数を実行
         if is_foreign:
             display_title = translate_title_without_gemini(art['original_title'])
         else:
