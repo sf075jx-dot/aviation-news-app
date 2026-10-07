@@ -15,14 +15,14 @@ from google import genai
 # 1. ページ基本設定（スマホ対応レスポンシブ）
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="航空ニュース・アナライザー",
+    page_title="航空業界ニュース・アナライザー",
     page_icon="✈️",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
 st.title("✈️ 航空ニュース・アナライザー")
-st.caption("国内外の航空ニュースをスクレイピングし、多角的な視点から深掘り分析します。")
+st.caption("国内外の航空ニュースを検索し、リクエストされた記事を多角的な視点から深掘り分析します。")
 
 # Gemini API クライアント初期化（※記事分析ボタンでのみ使用）
 api_key = st.secrets.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
