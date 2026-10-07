@@ -68,15 +68,30 @@ with st.sidebar:
     exclude_spotter = st.checkbox("写真・スポッター系サイトを除外", value=True)
 
 # ---------------------------------------------------------
-# 3. Gemini API 翻訳・分析関数（キャッシュ対応）
+# 3. Gemini API 関数（タイトル翻訳 / 詳細分析）
 # ---------------------------------------------------------
 @st.cache_data(show_spinner=False)
+def translate_title_to_japanese(title):
+    """ニュースタイトルを自然な日本語に翻訳"""
+    if not client:
+        return title
+    prompt = f"以下の英語の航空ニュースのタイトルを、自然で分かりやすい日本語に翻訳してください。余計な解説は含めず、翻訳後のタイトルのみを出力してください。\n\n【タイトル】\n{title}"
+    try:
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt
+        )
+        return response.text.strip()
+    except Exception:
+        return title
+
+@st.cache_data(show_spinner=False)
 def generate_gemini_summary(title, content, is_foreign=False):
-    """他業界・経済への影響を含めた構造的分析記事を生成（海外ニュースは日本語翻訳を指示）"""
+    """他業界・経済への影響を含めた構造的分析記事を生成"""
     if not client:
         return "⚠️ Gemini APIキーが設定されていません。"
     
-    lang_instruction = "※元のニュースは英語です。タイトルおよびすべての回答を【自然で分かりやすい日本語】に翻訳して回答してください。" if is_foreign else ""
+    lang_instruction = "※元のニュースは英語です。分析文言はすべて【自然で分かりやすい日本語】で執筆してください。" if is_foreign else ""
 
     prompt = f"""あなたは優秀な航空・産業アナリストです。
 以下のニュースを多角的に分析し、航空業界内にとどまらない「経済・他業界への影響」を含めた質の高い考察レポートを作成してください。
@@ -141,7 +156,7 @@ def fetch_news(query, region_mode, max_items, filter_spotter):
             
         summary_raw = BeautifulSoup(entry.get("summary", ""), "html.parser").get_text()
         articles.append({
-            "title": title,
+            "original_title": title,
             "source": source,
             "link": entry.link,
             "published": entry.get("published", "最新"),
@@ -162,26 +177,33 @@ with col2:
     if st.button("🔄 最新に更新", type="primary"):
         st.cache_data.clear()
 
-with st.spinner("最新ニュースを取得中..."):
-    articles = fetch_news(query_text, region_mode, max_articles, exclude_spotter)
-
 is_foreign = (region_mode == "🌐 海外・グローバルニュース (英語)")
+
+with st.spinner("最新ニュースを取得・翻訳中..."):
+    articles = fetch_news(query_text, region_mode, max_articles, exclude_spotter)
 
 if not articles:
     st.warning("直近のニュースが見つかりませんでした。カテゴリやキーワードを変更してください。")
 else:
     for idx, art in enumerate(articles, 1):
-        st.markdown(f"#### {idx}. [{art['title']}]({art['link']})")
-        st.caption(f"📰 出所: {art['source']} | 🕒 日時: {art['published']}")
+        # 海外ニュースの場合はタイトルを日本語に自動翻訳
+        if is_foreign:
+            display_title = translate_title_to_japanese(art['original_title'])
+        else:
+            display_title = art['original_title']
         
-        btn_label = "🌐 日本語に翻訳して詳細分析する" if is_foreign else "📊 このニュースを詳細分析する"
+        st.markdown(f"#### {idx}. [{display_title}]({art['link']})")
+        if is_foreign:
+            st.caption(f"🔤 原題: {art['original_title']} | 📰 出所: {art['source']} | 🕒 日時: {art['published']}")
+        else:
+            st.caption(f"📰 出所: {art['source']} | 🕒 日時: {art['published']}")
         
-        with st.expander("📊 AI要約・日本語翻訳・経済影響分析を表示"):
-            if st.button(btn_label, key=f"btn_{idx}"):
-                with st.spinner("Geminiが翻訳および経済・他業界への影響を分析中..."):
-                    summary = generate_gemini_summary(art['title'], art['summary'], is_foreign=is_foreign)
+        with st.expander("📊 AI要約・経済影響分析を表示"):
+            if st.button("📊 このニュースを詳細分析する", key=f"btn_{idx}"):
+                with st.spinner("Geminiが経済・他業界への影響を分析中..."):
+                    summary = generate_gemini_summary(art['original_title'], art['summary'], is_foreign=is_foreign)
                     st.markdown(summary)
             else:
-                st.write("※ ボタンを押すと「日本語翻訳」および「他業界・経済への影響」の解説を表示します。")
+                st.write("※ ボタンを押すと「他業界・経済への影響」の解説記事を表示します。")
         
         st.divider()
