@@ -6,6 +6,7 @@ import urllib.parse
 import os
 import re
 import datetime
+import time
 from email.utils import parsedate_to_datetime
 from difflib import SequenceMatcher
 from google import genai
@@ -21,7 +22,7 @@ st.set_page_config(
 )
 
 st.title("✈️ 航空ニュース・アナライザー")
-st.caption("国内外の航空ニュースをスクレイピングし、他業界や経済への波及効果まで深掘り分析します。")
+st.caption("国内外の航空ニュースをスクレイピングし、多角的な視点から深掘り分析します。")
 
 # Gemini API クライアント初期化（※記事分析ボタンでのみ使用）
 api_key = st.secrets.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
@@ -173,18 +174,18 @@ def parse_published_time(entry):
         return datetime.datetime.min
 
 # ---------------------------------------------------------
-# 5. Gemini API 関数（※詳細分析ボタン専用）
+# 5. Gemini API 関数（※詳細分析ボタン専用：多角的分析プロンプト）
 # ---------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def generate_gemini_summary(title, content, is_foreign=False):
-    """他業界・経済への影響を含めた構造的分析記事を生成"""
+    """多角的な視点から構造的・網羅的な分析レポートを生成（リトライ機能付き）"""
     if not client:
         return "⚠️ Gemini APIキーが設定されていません。"
     
     lang_instruction = "※元のニュースは英語です。分析文言はすべて【自然で分かりやすい日本語】で執筆してください。" if is_foreign else ""
 
     prompt = f"""あなたは優秀な航空・産業アナリストです。
-以下のニュースを多角的に分析し、航空業界内にとどまらない「経済・他業界への影響」を含めた質の高い考察レポートを作成してください。
+以下のニュースについて、単なる表面的な要約や経済影響だけに留まらず、**「技術的課題」「法規制・政策」「環境・サステナビリティ」「消費者心理・社会受容性」「地政学・サプライチェーン」などの多角的な視点**から深く多面的に分析し、質の高い考察レポートを作成してください。
 {lang_instruction}
 
 【ニュースタイトル】
@@ -197,26 +198,36 @@ def generate_gemini_summary(title, content, is_foreign=False):
 【出力フォーマット】
 以下の見出しに沿って、箇条書きと簡潔な文章で回答してください。
 
-■ 1. ニュースの概要（日本語要約）
-・出来事の要点を2〜3行で簡潔にまとめてください。
+■ 1. ニュースの核心（多面的な背景）
+・単なる事実要約だけでなく、この出来事の背景にある構造的な要因や多面的な意味合いを2〜3行でまとめてください。
 
-■ 2. 航空業界内への影響
-・運航、経営、安全、顧客体験等への直接的なインパクト。
+■ 2. 航空業界内へのインパクト
+・運航の安全性、航空会社の経営戦略、機材運用、乗客へのサービス面などに与える直接的・間接的な影響。
 
-■ 3. 他業界・経済への波及効果
-・サプライチェーン、観光・ホテル、物流、燃料・エネルギー、関連産業や景気動向などへの波及。
+■ 3. 技術・法規制・インフラストラクチャーの視点
+・関与するテクノロジーの課題、安全基準、関連する航空法・国際法規、インフラ（空港や管制等）への波及。
 
-■ 4. 今後の展望・注目ポイント
-・この出来事をきっかけに今後どのような変化が予想されるか、次に注視すべき動向。
+■ 4. 経済・他業界および環境（サステナビリティ）への波及効果
+・サプライチェーン、観光・ホテル・物流業界への影響、および環境規制やCO2削減などへの長期的な波及。
+
+■ 5. 今後のシナリオと注視すべきポイント
+・短期・長期でどのような変化が想定されるか、今後業界関係者や市場が注視すべき決定的な分かれ目（リスク要因など）。
 """
-    try:
-        response = client.models.generate_content(
-            model='gemini-3.8-flash',
-            contents=prompt
-        )
-        return response.text.strip()
-    except Exception as e:
-        return f"分析レポートの生成に失敗しました: {e}"
+    
+    # 503エラー（一時的高負荷）対策として最大2回リトライする
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model='gemini-3.8-flash',
+                contents=prompt
+            )
+            return response.text.strip()
+        except Exception as e:
+            if "503" in str(e) and attempt < max_retries - 1:
+                time.sleep(2)  # 2秒待って再試行
+                continue
+            return f"分析レポートの生成に失敗しました（一時的な混雑の可能性があります。少し時間を置いて再度お試しください）: {e}"
 
 # ---------------------------------------------------------
 # 6. スクレイピング & ニュース取得（重複は最新件へ統合）
@@ -309,12 +320,12 @@ else:
         else:
             st.caption(f"📰 出所: {art['source']} | 🕒 日時: {art['published']}")
         
-        with st.expander("📊 AI要約・経済影響分析を表示"):
+        with st.expander("📊 AI要約・多角的な分析レポートを表示"):
             if st.button("📊 このニュースを詳細分析する", key=f"btn_{idx}"):
-                with st.spinner("Geminiが経済・他業界への影響を分析中..."):
+                with st.spinner("Geminiが多角的な視点から分析レポートを作成中..."):
                     summary = generate_gemini_summary(art['original_title'], art['summary'], is_foreign=is_foreign)
                     st.markdown(summary)
             else:
-                st.write("※ ボタンを押すと「他業界・経済への影響」の解説記事を表示します。")
+                st.write("※ ボタンを押すと、技術・法規制・環境・経済などの多角的視点を含む解説記事を表示します。")
         
         st.divider()
