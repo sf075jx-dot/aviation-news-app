@@ -179,4 +179,4 @@ else:
             else:
                 st.write("※ ボタンを押すと「他業界・経済への影響」を含めた解説記事を生成します。")
         
-        st.divider
+        st.divider()
