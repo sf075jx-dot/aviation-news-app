@@ -2,275 +2,181 @@ import streamlit as st
 import feedparser
 import requests
 from bs4 import BeautifulSoup
-from google import genai
-from google.genai.errors import APIError
-import time
 import urllib.parse
 from difflib import SequenceMatcher
+import os
+from google import genai
 
 # ---------------------------------------------------------
-# 1. ページ初期設定 & 画面タイトル
+# 1. ページ基本設定（スマホ対応レスポンシブ）
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="航空業界AIニュースアナライザー",
+    page_title="航空ニュース・アナライザー",
     page_icon="✈️",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="collapsed"
 )
 
-st.title("✈️ 航空業界 AIニュースアナライザー & レポート生成")
-st.caption("国内外の最新航空ニュースを重複なし・段階的期間検索で自動収集し、Gemini APIが要約・リスク分析・簡易記事を作成します。")
+st.title("✈️ 航空ニュース・アナライザー")
+st.caption("国内外の航空ニュースをスクレイピングし、Gemini APIで他業界・経済への波及効果まで深掘り分析します。")
+
+# Gemini API クライアント初期化（Streamlit Secrets 優先、次点で環境変数）
+api_key = st.secrets.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
+client = genai.Client(api_key=api_key) if api_key else None
+
+if not api_key:
+    st.warning("⚠️ `GEMINI_API_KEY` が設定されていません。Streamlit Community Cloudの Secrets または環境変数にAPIキーを設定してください。")
 
 # ---------------------------------------------------------
-# 2. サイドバー（設定 & 検索条件）
+# 2. サイドバー（条件指定）
 # ---------------------------------------------------------
 with st.sidebar:
-    st.header("⚙️ 設定")
-    
-    # Gemini APIキーの入力（Secrets自動取得対応）
-    api_key_input = st.text_input(
-        "Gemini API Key",
-        type="password",
-        value=st.secrets.get("GEMINI_API_KEY", ""),
-        help="Google AI Studio (https://aistudio.google.com/) の無料キーを入力してください。"
-    )
-    
-    st.divider()
-    st.subheader("🌐 対象エリア選択")
-    region_mode = st.radio(
-        "検索対象エリア",
-        ["🇯🇵 日本国内メイン", "🌐 海外・グローバル（自動日本語翻訳）"]
-    )
-    
-    st.divider()
-    st.subheader("🔍 ニュース検索設定")
+    st.header("⚙️ ニュース検索条件")
+    region_mode = st.radio("対象エリア", ["🇯🇵 日本国内ニュース", "🌐 海外・グローバルニュース (英語)"])
     
     search_category = st.selectbox(
         "検索カテゴリ",
         [
-            "⚠️ 航空事故・インシデント・安全運航・トラブル",
-            "航空業界全般（JAL / ANA / LCC / 航空路線）",
+            "⚠️ 航空事故・インシデント・安全・トラブル",
+            "航空会社・運航（JAL / ANA / LCC / 路線）",
             "エアライン経営・国際線・燃油サーチャージ",
-            "新型旅客機・ボーイング・エアバス（機材・製造）",
-            "空港・グランドハンドリング・管制・運航整備",
+            "機材・製造（ボーイング / エアバス / 新型機）",
+            "空港・グランドハンドリング・管制・整備",
             "✏️ 自由キーワード指定"
         ]
     )
     
     if search_category == "✏️ 自由キーワード指定":
-        user_keyword = st.text_input("検索キーワードを入力", value="航空 事故")
-        query_text = user_keyword
+        query_text = st.text_input("キーワードを入力", value="航空 事故")
     else:
-        if region_mode == "🇯🇵 日本国内メイン":
-            category_map = {
-                "⚠️ 航空事故・インシデント・安全運航・トラブル": "航空事故 インシデント 欠航 トラブル 安全運航",
-                "航空業界全般（JAL / ANA / LCC / 航空路線）": "航空 JAL ANA LCC 路線",
-                "エアライン経営・国際線・燃油サーチャージ": "航空 燃油サーチャージ 国際線 運賃",
-                "新型旅客機・ボーイング・エアバス（機材・製造）": "ボーイング エアバス 旅客機 航空機",
-                "空港・グランドハンドリング・管制・運航整備": "空港 管制 整備 グランドハンドリング 航空"
-            }
-        else:
-            category_map = {
-                "⚠️ 航空事故・インシデント・安全運航・トラブル": "aviation accident incident emergency safety crash",
-                "航空業界全般（JAL / ANA / LCC / 航空路線）": "airlines aviation flight route",
-                "エアライン経営・国際線・燃油サーチャージ": "airline finance fare fuel surcharge international flight",
-                "新型旅客機・ボーイング・エアバス（機材・製造）": "Boeing Airbus aircraft passenger plane",
-                "空港・グランドハンドリング・管制・運航整備": "airport ATC maintenance ground handling"
-            }
-        query_text = category_map[search_category]
-    
-    max_articles = st.slider("取得・要約件数", min_value=1, max_value=5, value=3)
+        category_map_ja = {
+            "⚠️ 航空事故・インシデント・安全・トラブル": "航空事故 インシデント 欠航 トラブル 安全運航",
+            "航空会社・運航（JAL / ANA / LCC / 路線）": "航空 JAL ANA LCC 路線",
+            "エアライン経営・国際線・燃油サーチャージ": "航空 燃油サーチャージ 国際線 運賃",
+            "機材・製造（ボーイング / エアバス / 新型機）": "ボーイング エアバス 旅客機 航空機",
+            "空港・グランドハンドリング・管制・整備": "空港 管制 整備 グランドハンドリング 航空"
+        }
+        category_map_en = {
+            "⚠️ 航空事故・インシデント・安全・トラブル": "aviation accident incident emergency safety crash",
+            "航空会社・運航（JAL / ANA / LCC / 路線）": "airlines aviation flight route",
+            "エアライン経営・国際線・燃油サーチャージ": "airline finance fare fuel surcharge international flight",
+            "機材・製造（ボーイング / エアバス / 新型機）": "Boeing Airbus aircraft passenger plane",
+            "空港・グランドハンドリング・管制・整備": "airport ATC maintenance ground handling"
+        }
+        query_text = category_map_ja[search_category] if region_mode == "🇯🇵 日本国内ニュース" else category_map_en[search_category]
+
+    max_articles = st.slider("表示件数", min_value=3, max_value=15, value=5)
+    exclude_spotter = st.checkbox("写真・スポッター系サイトを除外", value=True)
 
 # ---------------------------------------------------------
-# 3. ニュース重複検出・検索 ＆ AI処理関数
+# 3. Gemini API アナリスト要約（キャッシュ & 拡張プロンプト）
 # ---------------------------------------------------------
-def is_similar(text1, text2, threshold=0.5):
-    """2つのタイトルの類似度を計算し、同一トピック（別サイト記事）かを判定"""
-    return SequenceMatcher(None, text1, text2).ratio() > threshold
-
-def deduplicate_articles(articles):
-    """同一・重複トピックの記事を除外（類似タイトルの場合は先着のみ残す）"""
-    unique_articles = []
-    for art in articles:
-        duplicate = False
-        for unique in unique_articles:
-            if is_similar(art["title"], unique["title"]):
-                duplicate = True
-                break
-        if not duplicate:
-            unique_articles.append(art)
-    return unique_articles
-
-def fetch_rss_by_time(query, region_mode, time_param):
-    """指定した期間パラメータ（when:1d, when:3d, when:7d）でRSSデータを取得"""
-    full_query = f"{query} {time_param}"
-    encoded_query = urllib.parse.quote(full_query)
+@st.cache_data(show_spinner=False)
+def generate_gemini_summary(title, content):
+    """他業界・経済への影響を含めた構造的分析記事を生成"""
+    if not client:
+        return "⚠️ Gemini APIキーが設定されていません。"
     
-    if region_mode == "🇯🇵 日本国内メイン":
-        rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ja&gl=JP&ceid=JP:ja"
-    else:
-        rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    
-    try:
-        response = requests.get(rss_url, headers=headers, timeout=10)
-        feed = feedparser.parse(response.content)
-    except Exception:
-        feed = feedparser.parse(rss_url)
-
-    articles = []
-    for entry in feed.entries:
-        summary_raw = entry.get("summary", entry.get("description", ""))
-        clean_summary = BeautifulSoup(summary_raw, "html.parser").get_text()
-        
-        if len(clean_summary.strip()) < 15:
-            clean_summary = f"タイトル: {entry.title}"
-            
-        published_parsed = entry.get("published_parsed", None)
-        
-        articles.append({
-            "title": entry.title,
-            "link": entry.link,
-            "published": entry.get("published", entry.get("updated", "最新")),
-            "published_parsed": published_parsed,
-            "summary": clean_summary
-        })
-    
-    # 最新順に並び替え
-    articles = sorted(
-        articles, 
-        key=lambda x: x["published_parsed"] if x["published_parsed"] else time.gmtime(0), 
-        reverse=True
-    )
-    return articles
-
-def search_web_news_tiered(query, region_mode, max_items=3):
-    """24時間以内 ➔ 3日以内 ➔ 7日以内 と段階的に検索を広げ、重複カットして取得"""
-    periods = [
-        ("when:1d", "直近24時間以内"),
-        ("when:3d", "直近3日以内"),
-        ("when:7d", "直近7日以内")
-    ]
-    
-    found_articles = []
-    used_period_label = ""
-    
-    for time_param, label in periods:
-        raw_articles = fetch_rss_by_time(query, region_mode, time_param)
-        unique_articles = deduplicate_articles(raw_articles)
-        
-        if unique_articles:
-            found_articles = unique_articles
-            used_period_label = label
-            break
-            
-    return found_articles[:max_items], used_period_label
-
-def generate_ai_report(client, title, content):
-    """Gemini API（gemini-3.8-flash）を使用（503混雑時は15秒間隔・最大5回自動リトライ）"""
-    prompt = f"""
-あなたは航空業界専門のシニアアナリスト兼リスク管理専門家です。
-以下の航空関連ニュース（事故・インシデント・運航・経営等）を読み込み、業界実務者向けの「要約」「業界インパクト・安全面へのリスク分析」「簡易ニュース解説記事」を作成してください。
-※ニュースが英語の場合は、必ず自然で分かりやすい日本語に翻訳した上でレポートを作成してください。
+    prompt = f"""あなたは優秀な航空・産業アナリストです。
+以下のニュースを多角的に分析し、航空業界内にとどまらない「経済・他業界への影響」を含めた質の高い考察レポートを作成してください。
 
 【ニュースタイトル】
 {title}
 
-【ニュース概要・本文】
+【ニュース概要】
 {content}
 
+---
 【出力フォーマット】
-以下のMarkdown構成で出力してください。
+以下の見出しに沿って、箇条書きと簡潔な文章で回答してください。
 
-### 📌 1. 重要ポイント（3行サマリー）
-- 
+■ 1. ニュースの要約
+・出来事の要点を2〜3行で簡潔にまとめてください。
 
-### 🔍 2. 業界へのインパクト・リスク分析
-（運航安全面への影響、ダイヤ乱れ・損害、業界・競合への影響、規制や再発防止策の動きなどを専門的視点で解説）
+■ 2. 航空業界内への影響
+・運航、経営、安全、顧客体験等への直接的なインパクト。
 
-### 📝 3. 簡易ニュース解説記事
-（社内共有や速報レポートとしてそのまま使えるような200〜300字程度の読みやすいニュース解説記事）
+■ 3. 他業界・経済への波及効果
+・サプライチェーン、観光・ホテル、物流、燃料・エネルギー、関連産業や景気動向などへの波及。
 
-### 🏷 関連キーワード・タグ
+■ 4. 今後の展望・注目ポイント
+・この出来事をきっかけに今後どのような変化が予想されるか、次に注視すべき動向。
 """
-
-    # ★混雑時対策: 最大5回（15秒間隔）まで粘り強くリトライ
-    max_retries = 5
-    for attempt in range(max_retries):
-        try:
-            response = client.models.generate_content(
-                model='gemini-3.8-flash',
-                contents=prompt
-            )
-            return response.text
-        except APIError as e:
-            err_msg = str(e)
-            # 日上限エラーの検知
-            if e.code == 429 and ("retry in" in err_msg or "h" in err_msg):
-                return "🚨 **1日あたりのGemini API無料利用上限に達しました。**\nサイドバーで【別のGemini APIキー】を入力するか、数時間後に再度お試しください。"
-            
-            # 1分制限 (429) は30秒待機
-            if e.code == 429 and attempt < max_retries - 1:
-                time.sleep(30)
-                continue
-            # ★サーバー混雑 (503) は15秒待機して最大5回再試行
-            elif e.code == 503 and attempt < max_retries - 1:
-                time.sleep(15)
-                continue
-            return f"⚠️️ **APIエラーが発生しました (Code: {e.code}):** {e.message}"
-        except Exception as e:
-            if attempt < max_retries - 1:
-                time.sleep(15)
-                continue
-            return f"⚠️ **予期せぬエラーが発生しました:** {str(e)}"
+    try:
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt
+        )
+        return response.text.strip()
+    except Exception as e:
+        return f"分析レポートの生成に失敗しました: {e}"
 
 # ---------------------------------------------------------
-# 4. メイン処理 & プログレス表示
+# 4. スクレイピング & スポッターサイト除去
 # ---------------------------------------------------------
-if not api_key_input:
-    st.warning("👈 サイドバーで Gemini API キーを入力してください。")
-    st.info("💡 キーは [Google AI Studio](https://aistudio.google.com/) で完全無料発行できます。")
-    st.stop()
+NG_DOMAINS = ["flyteam.jp", "planespotters.net", "jetphotos.com", "airliners.net"]
+NG_KEYWORDS = ["FlyTeam", "航空フォト", "機材写真", "特別塗装機", "PlaneSpotters", "JetPhotos"]
 
-# Gemini クライアント初期化
-client = genai.Client(api_key=api_key_input)
+def is_spotter_site(title, source, link):
+    """写真メイン・スポッター系サイトを判定"""
+    return any(d in link.lower() for d in NG_DOMAINS) or any(k.lower() in source.lower() or k.lower() in title.lower() for k in NG_KEYWORDS)
 
-if st.button("🚀 最新ニュースを検索してAIレポートを生成", type="primary"):
-    with st.spinner(f"🌐 [{region_mode}] 最新ニュースを段階検索中..."):
-        articles, used_period = search_web_news_tiered(query_text, region_mode, max_items=max_articles)
+def fetch_news(query, region_mode, max_items, filter_spotter):
+    """Google News RSS からニュースを取得"""
+    encoded_query = urllib.parse.quote(f"{query} when:3d")
+    hl_gl = "hl=ja&gl=JP&ceid=JP:ja" if region_mode == "🇯🇵 日本国内ニュース" else "hl=en-US&gl=US&ceid=US:en"
+    rss_url = f"https://news.google.com/rss/search?q={encoded_query}&{hl_gl}"
+    
+    feed = feedparser.parse(rss_url)
+    articles = []
+    
+    for entry in feed.entries:
+        title = entry.title.rsplit(" - ", 1)[0] if " - " in entry.title else entry.title
+        source = entry.title.rsplit(" - ", 1)[1] if " - " in entry.title else "不明"
         
-    if not articles:
-        st.error("直近7日間以内のニュースが見つかりませんでした。検索キーワードを変更して再実行してください。")
-    else:
-        st.success(f"「{query_text}」に関する【{used_period}】のニュースを {len(articles)} 件（重複除外済み）発見しました！要約・分析処理を開始します。")
-        
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        for idx, article in enumerate(articles, 1):
-            status_text.text(f"🤖 記事 {idx}/{len(articles)} を Gemini API で要約・分析中...")
+        if filter_spotter and is_spotter_site(title, source, entry.link):
+            continue
             
-            with st.expander(f"【記事{idx}】{article['title']}", expanded=True):
-                st.write(f"🔗 **元記事:** [{article['title']}]({article['link']})（{article['published']}）")
-                
-                start_time = time.time()
-                report = generate_ai_report(client, article['title'], article['summary'])
-                elapsed_time = round(time.time() - start_time, 1)
-                
-                st.markdown("---")
-                st.markdown(report)
-                st.caption(f"⚡ AI生成完了時間: 約 {elapsed_time} 秒")
-                
-            progress_bar.progress(idx / len(articles))
+        summary_raw = BeautifulSoup(entry.get("summary", ""), "html.parser").get_text()
+        articles.append({
+            "title": title,
+            "source": source,
+            "link": entry.link,
+            "published": entry.get("published", "最新"),
+            "summary": summary_raw if len(summary_raw.strip()) > 10 else title
+        })
+        if len(articles) >= max_items:
+            break
             
-            # レート制限回避の13秒待機
-            if idx < len(articles):
-                countdown_placeholder = st.empty()
-                for wait_sec in range(13, 0, -1):
-                    countdown_placeholder.info(f"⏳ 無料枠のAPI連続リクエスト制限（5回/分）を回避するため、次の記事処理まで待機中... あと {wait_sec} 秒")
-                    time.sleep(1)
-                countdown_placeholder.empty()
-                
-        status_text.text("✨ すべてのニュースの要約・リスク分析レポート生成が完了しました！")
+    return articles
+
+# ---------------------------------------------------------
+# 5. メイン表示エリア
+# ---------------------------------------------------------
+col1, col2 = st.columns([3, 1])
+with col1:
+    st.subheader(f"📡 取得カテゴリ: `{search_category}`")
+with col2:
+    if st.button("🔄 最新に更新", type="primary"):
+        st.cache_data.clear()
+
+with st.spinner("最新ニュースを取得中..."):
+    articles = fetch_news(query_text, region_mode, max_articles, exclude_spotter)
+
+if not articles:
+    st.warning("直近のニュースが見つかりませんでした。カテゴリやキーワードを変更してください。")
+else:
+    for idx, art in enumerate(articles, 1):
+        st.markdown(f"#### {idx}. [{art['title']}]({art['link']})")
+        st.caption(f"📰 出所: {art['source']} | 🕒 日時: {art['published']}")
+        
+        # API消費を抑えるオンデマンド展開エリア
+        with st.expander("📊 AI経済波及効果・アナリスト分析を表示"):
+            if st.button(f"このニュースを詳細分析する", key=f"btn_{idx}"):
+                with st.spinner("Geminiが経済・他業界への影響を分析中..."):
+                    summary = generate_gemini_summary(art['title'], art['summary'])
+                    st.markdown(summary)
+            else:
+                st.write("※ ボタンを押すと「他業界・経済への影響」を含めた解説記事を生成します。")
+        
+        st.divider
