@@ -21,7 +21,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-st.title("✈️ 航空ニュース・アナライザー")
+st.title("航空業界ニュース・アナライザー")
 st.caption("国内外の航空ニュースを検索し、リクエストされた記事を多角的な視点から深掘り分析します。")
 
 # Gemini API クライアント初期化（※記事分析ボタンでのみ使用）
