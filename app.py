@@ -3,7 +3,6 @@ import feedparser
 import requests
 from bs4 import BeautifulSoup
 import urllib.parse
-from difflib import SequenceMatcher
 import os
 from google import genai
 
@@ -18,7 +17,7 @@ st.set_page_config(
 )
 
 st.title("✈️ 航空ニュース・アナライザー")
-st.caption("国内外の航空ニュースをスクレイピングし、Gemini APIで他業界・経済への波及効果まで深掘り分析します。")
+st.caption("国内外の航空ニュースをスクレイピングし、Gemini APIで日本語翻訳・他業界や経済への波及効果まで深掘り分析します。")
 
 # Gemini API クライアント初期化（Streamlit Secrets 優先、次点で環境変数）
 api_key = st.secrets.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
@@ -69,16 +68,19 @@ with st.sidebar:
     exclude_spotter = st.checkbox("写真・スポッター系サイトを除外", value=True)
 
 # ---------------------------------------------------------
-# 3. Gemini API アナリスト要約（キャッシュ & 拡張プロンプト）
+# 3. Gemini API 翻訳・分析関数（キャッシュ対応）
 # ---------------------------------------------------------
 @st.cache_data(show_spinner=False)
-def generate_gemini_summary(title, content):
-    """他業界・経済への影響を含めた構造的分析記事を生成"""
+def generate_gemini_summary(title, content, is_foreign=False):
+    """他業界・経済への影響を含めた構造的分析記事を生成（海外ニュースは日本語翻訳を指示）"""
     if not client:
         return "⚠️ Gemini APIキーが設定されていません。"
     
+    lang_instruction = "※元のニュースは英語です。タイトルおよびすべての回答を【自然で分かりやすい日本語】に翻訳して回答してください。" if is_foreign else ""
+
     prompt = f"""あなたは優秀な航空・産業アナリストです。
 以下のニュースを多角的に分析し、航空業界内にとどまらない「経済・他業界への影響」を含めた質の高い考察レポートを作成してください。
+{lang_instruction}
 
 【ニュースタイトル】
 {title}
@@ -90,7 +92,7 @@ def generate_gemini_summary(title, content):
 【出力フォーマット】
 以下の見出しに沿って、箇条書きと簡潔な文章で回答してください。
 
-■ 1. ニュースの要約
+■ 1. ニュースの概要（日本語要約）
 ・出来事の要点を2〜3行で簡潔にまとめてください。
 
 ■ 2. 航空業界内への影響
@@ -163,6 +165,8 @@ with col2:
 with st.spinner("最新ニュースを取得中..."):
     articles = fetch_news(query_text, region_mode, max_articles, exclude_spotter)
 
+is_foreign = (region_mode == "🌐 海外・グローバルニュース (英語)")
+
 if not articles:
     st.warning("直近のニュースが見つかりませんでした。カテゴリやキーワードを変更してください。")
 else:
@@ -170,13 +174,14 @@ else:
         st.markdown(f"#### {idx}. [{art['title']}]({art['link']})")
         st.caption(f"📰 出所: {art['source']} | 🕒 日時: {art['published']}")
         
-        # API消費を抑えるオンデマンド展開エリア
-        with st.expander("📊 AI経済波及効果・アナリスト分析を表示"):
-            if st.button(f"このニュースを詳細分析する", key=f"btn_{idx}"):
-                with st.spinner("Geminiが経済・他業界への影響を分析中..."):
-                    summary = generate_gemini_summary(art['title'], art['summary'])
+        btn_label = "🌐 日本語に翻訳して詳細分析する" if is_foreign else "📊 このニュースを詳細分析する"
+        
+        with st.expander("📊 AI要約・日本語翻訳・経済影響分析を表示"):
+            if st.button(btn_label, key=f"btn_{idx}"):
+                with st.spinner("Geminiが翻訳および経済・他業界への影響を分析中..."):
+                    summary = generate_gemini_summary(art['title'], art['summary'], is_foreign=is_foreign)
                     st.markdown(summary)
             else:
-                st.write("※ ボタンを押すと「他業界・経済への影響」を含めた解説記事を生成します。")
+                st.write("※ ボタンを押すと「日本語翻訳」および「他業界・経済への影響」の解説を表示します。")
         
         st.divider()
